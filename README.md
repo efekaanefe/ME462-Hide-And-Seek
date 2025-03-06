@@ -1,6 +1,8 @@
 # ME462-Hide-And-Seek
 
-### NextWeek TODO
+## TODOs
+
+### Next Week 
 - [ ] project requirement
 - [ ] literature survey
     - [ ] Skeleton tracking
@@ -9,7 +11,10 @@
     - [ ] HRI, emotional bounding, american soldier robots, DamiLee, restaurant coffe
     - [ ] humans bbc
 
-### TODOs
+
+### Previous Weeks 
+
+### General Project
 - [ ] get the hardware and software ready for development -> raspberry pi, pc, cameras, git
 - [ ] create a project template -> (code structures, visuals for app (framework))
 - [ ] capture live camera footage(s) in the app
