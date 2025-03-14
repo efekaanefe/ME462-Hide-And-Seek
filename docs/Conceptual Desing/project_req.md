@@ -13,9 +13,10 @@ The project aims to develop a real-time people tracking system for an office env
 - The system must be compatible with ROS for seamless integration.
 - The system must securely store real-time and historical location data.
 
-## 3. Additional Requirements
 - The system must provide real-time x, y location updates for each detected person.
 - The system must monitor compliance with these rules.
+
+## 3. Additional Requirements
 - It must be able to provide notifications about rule violations in an engaging manner.
 - The robot must control media systems when necessary.
 - It must be capable of navigating within a room to interact with individuals.
