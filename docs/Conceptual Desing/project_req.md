@@ -16,10 +16,10 @@ The project aims to develop a real-time people tracking system for an office env
 - The system must provide real-time x, y location updates for each detected person.
 - The system must monitor compliance with these rules.
 
-## 3. Additional Requirements
-- It must be able to provide notifications about rule violations in an engaging manner.
-- The robot must control media systems when necessary.
-- It must be capable of navigating within a room to interact with individuals.
-- The NAO robot must be controllable through ROS, allowing commands for movement, media control, and interactive behaviors.
+## 3. Bonus Requirements
+- It may be able to provide notifications about rule violations in an engaging manner.
+- The robot may control media systems when necessary.
+- It may be capable of navigating within a room to interact with individuals.
+- The NAO robot may be controllable through ROS, allowing commands for movement, media control, and interactive behaviors.
 
 
