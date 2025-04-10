@@ -1,0 +1,56 @@
+{
+    "known_people": {
+        "ErenTurkmen": {
+            "total_duration": "00:00:30",
+            "total_duration_seconds": 30.727559089660645,
+            "first_seen": "2025-04-10 23:21:59",
+            "last_seen": "2025-04-10 23:22:30",
+            "tracks": [
+                {
+                    "camera": 0,
+                    "track_id": 1,
+                    "track_start": "2025-04-10 23:21:59",
+                    "track_end": "2025-04-10 23:22:30",
+                    "duration": "00:00:30"
+                }
+            ]
+        },
+        "EfekaanEfe": {
+            "total_duration": "00:00:36",
+            "total_duration_seconds": 36.87084674835205,
+            "first_seen": "2025-04-10 23:22:32",
+            "last_seen": "2025-04-10 23:23:11",
+            "tracks": [
+                {
+                    "camera": 0,
+                    "track_id": 2,
+                    "track_start": "2025-04-10 23:22:32",
+                    "track_end": "2025-04-10 23:22:47",
+                    "duration": "00:00:15"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 3,
+                    "track_start": "2025-04-10 23:22:49",
+                    "track_end": "2025-04-10 23:22:55",
+                    "duration": "00:00:06"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 4,
+                    "track_start": "2025-04-10 23:22:57",
+                    "track_end": "2025-04-10 23:23:04",
+                    "duration": "00:00:06"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 5,
+                    "track_start": "2025-04-10 23:23:06",
+                    "track_end": "ongoing",
+                    "duration": "00:00:08"
+                }
+            ]
+        }
+    },
+    "unknown_people": []
+}

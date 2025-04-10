@@ -13,32 +13,31 @@ from collections import deque
 from scipy.spatial.distance import cosine # For feature comparison
 import os
 import json
+from ultralytics import YOLO
+import dlib
+import face_recognition  # This uses dlib internally with a more convenient API
 
 # Check if CUDA is available
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Load YOLOv8 model - using Ultralytics implementation
 try:
-    from ultralytics import YOLO
-    model = YOLO('yolov8n.pt')  # Load the smallest YOLOv8 model to start with
+    model = YOLO('models\\yolov8n.pt')  # Load the smallest YOLOv8 model to start with
 except ImportError:
     messagebox.showerror("Error", "Please install ultralytics: pip install ultralytics")
     model = None
 
-# --- Add DeepFace import ---
+# Initialize face detector and recognition models
 try:
-    from deepface import DeepFace
-    # Optional: Preload models if needed, though DeepFace often handles this
-    # print("Attempting to build face recognition model...")
-    # DeepFace.build_model("Facenet") # Example: preload Facenet
-    # print("Face recognition model built.")
-except ImportError:
-    messagebox.showerror("Error", "Please install deepface and mtcnn: pip install deepface mtcnn")
-    DeepFace = None
+    # Initialize dlib's face detector and recognition model
+    face_detector = dlib.get_frontal_face_detector()
+    shape_predictor = dlib.shape_predictor('models\\shape_predictor_68_face_landmarks.dat')
+    face_rec_model = dlib.face_recognition_model_v1('models\\dlib_face_recognition_resnet_model_v1.dat')
+    
+    print("Models loaded successfully.")
 except Exception as e:
-    messagebox.showerror("Error", f"Error initializing DeepFace: {e}")
-    DeepFace = None
-# --- End DeepFace import ---
+    print(f"Error loading models: {e}")
+    model = None
 
 class PersonTracker:
     def __init__(self):
@@ -48,9 +47,9 @@ class PersonTracker:
         self.disappear_threshold = 2.0
         self.reid_time_window = 1000.0  # Very long to effectively keep all tracks for re-id
         # self.iou_threshold = 0.3
-        self.feature_threshold = 0.9  # Base threshold for new identifications
-        self.reidentification_threshold = 0.9  # More lenient threshold for recent tracks
-        self.face_model_name = "Facenet"
+        self.feature_threshold = 0.8  # More lenient threshold for known people
+        self.reidentification_threshold = 0.8
+        # self.face_model_name = "Facenet"
         self.face_detector_backend = "mtcnn"
         
         # Known people database
@@ -72,44 +71,59 @@ class PersonTracker:
         self.feature_history = {}  # {id: [list of recent features]}
         self.max_feature_history = 5  # Keep last 5 features for each ID
         
-        if DeepFace is None:
-             print("WARNING: DeepFace library not available. Face re-identification will be disabled.")
+        # Add performance settings
+        self.face_detection_interval = 5  # Only run face detection every N frames
+        self.frame_count = 0
+        self.last_face_detection_time = 0
+        self.min_face_detection_interval = 0.5  # Minimum seconds between full face detections
+        self.detection_downsample = 0.5  # Downsample factor for face detection (0.5 = half resolution)
+        
+        if model is None:
+             print("WARNING: YOLO model not available. Face re-identification will be disabled.")
 
     def load_known_people(self):
-        """Load known people dataset from directory structure."""
+        """Load known people with improved feature extraction"""
         if not os.path.exists(self.known_people_dir):
-            os.makedirs(self.known_people_dir)
-            print(f"Created known people directory: {self.known_people_dir}")
+            print(f"Known people directory not found: {self.known_people_dir}")
             return
 
-        print("Loading known people dataset...")
         for person_name in os.listdir(self.known_people_dir):
             person_dir = os.path.join(self.known_people_dir, person_name)
             if not os.path.isdir(person_dir):
                 continue
 
             features = []
-            image_paths = []
+            images = []
             
-            # Process each image in person's directory
             for img_file in os.listdir(person_dir):
                 if not img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
                     continue
                 
                 img_path = os.path.join(person_dir, img_file)
                 try:
-                    # Extract face feature from the image
-                    img = cv2.imread(img_path)
-                    if img is None:
-                        print(f"Warning: Could not read image {img_path}")
+                    # Load and convert image
+                    frame = cv2.imread(img_path)
+                    if frame is None:
                         continue
                         
-                    feature = self._extract_face_feature(img, [0, 0, img.shape[1], img.shape[0]])
-                    if feature is not None:
-                        features.append(feature)
-                        image_paths.append(img_path)
-                    else:
-                        print(f"Warning: Could not extract face feature from {img_path}")
+                    # Convert to RGB (face_recognition expects RGB)
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # Detect face locations using face_recognition (more reliable for stored images)
+                    face_locations = face_recognition.face_locations(rgb_frame)
+                    
+                    if not face_locations:
+                        print(f"No face found in {img_path}")
+                        continue
+                    
+                    # Get face encoding using face_recognition
+                    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+                    
+                    if face_encodings:
+                        features.append(face_encodings[0])
+                        images.append(img_path)
+                        print(f"Successfully extracted features from {img_path}")
+                    
                 except Exception as e:
                     print(f"Error processing {img_path}: {e}")
                     continue
@@ -117,7 +131,7 @@ class PersonTracker:
             if features:
                 self.known_people[person_name] = {
                     'features': features,
-                    'images': image_paths
+                    'images': images
                 }
                 print(f"Loaded {len(features)} features for {person_name}")
             else:
@@ -168,64 +182,56 @@ class PersonTracker:
 
     # +++ Helper: Extract Face Feature +++
     def _extract_face_feature(self, frame, bbox):
-        """Extracts face embedding from the person bounding box."""
-        if DeepFace is None: return None # Skip if library not loaded
-
-        x1, y1, x2, y2 = map(int, bbox)
-        # Ensure coordinates are valid
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
-
-        if x1 >= x2 or y1 >= y2:
-            return None # Invalid bbox
-
-        # Crop the person region from the frame
-        person_img = frame[y1:y2, x1:x2]
-
-        if person_img.size == 0:
-            # print("Empty image crop for feature extraction.")
-            return None
-
+        """Extract face features using face_recognition library (based on dlib)"""
         try:
-            # Use DeepFace.represent to detect the face and get embedding
-            embedding_objs = DeepFace.represent(
-                img_path=person_img,
-                model_name=self.face_model_name,
-                detector_backend=self.face_detector_backend,
-                enforce_detection=True, # MUST find a face
-                align=True # Align face improves accuracy
-            )
-            # represent returns a list of dicts, get embedding from the first face found
-            if embedding_objs:
-                return np.array(embedding_objs[0]['embedding'], dtype=np.float32)
-            else:
-                # print(f"No face detected by {self.face_detector_backend} within bbox {bbox}")
+            # Bail early if frame is invalid
+            if frame is None or frame.size == 0:
                 return None
-        except ValueError as e:
-            # Handles cases like no face found when enforce_detection=True
-            # print(f"Face representation error (ValueError) for bbox {bbox}: {e}")
-            return None
+                
+            # Convert bbox from (x1, y1, x2, y2) to dlib rectangle with padding
+            x1, y1, x2, y2 = map(int, bbox)
+            
+            # Add padding to the bounding box (20% on each side)
+            height = y2 - y1
+            width = x2 - x1
+            pad_x = int(width * 0.2)
+            pad_y = int(height * 0.2)
+            
+            # Apply padding with boundary checks
+            x1 = max(0, x1 - pad_x)
+            y1 = max(0, y1 - pad_y)
+            x2 = min(frame.shape[1], x2 + pad_x)
+            y2 = min(frame.shape[0], y2 + pad_y)
+            
+            # Skip tiny faces
+            if (x2 - x1) < 30 or (y2 - y1) < 30:
+                return None
+
+            # Convert to RGB (face_recognition expects RGB)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Convert to face_recognition format (top, right, bottom, left)
+            face_location = (y1, x2, y2, x1)
+            
+            # Extract face encoding using face_recognition (more reliable)
+            face_encodings = face_recognition.face_encodings(rgb_frame, [face_location])
+            
+            if not face_encodings:
+                return None
+                
+            return face_encodings[0]
+            
         except Exception as e:
-            # Catch other unexpected errors during extraction
-            print(f"Unexpected error during face feature extraction for bbox {bbox}: {e}")
+            print(f"Error extracting face feature: {e}")
             return None
 
     # +++ Helper: Calculate Feature Distance +++
     def _calculate_feature_distance(self, feature1, feature2):
-        """Calculates cosine distance between two feature vectors."""
-        # scipy.spatial.distance.cosine calculates 1 - cosine_similarity
-        try:
-             # Ensure they are numpy arrays
-             feature1 = np.asarray(feature1, dtype=np.float32)
-             feature2 = np.asarray(feature2, dtype=np.float32)
-             # Handle potential zero vectors (shouldn't happen with embeddings)
-             if np.linalg.norm(feature1) == 0 or np.linalg.norm(feature2) == 0:
-                 return 1.0 # Max distance
-             dist = cosine(feature1, feature2)
-             return dist if not np.isnan(dist) else 1.0 # Handle potential NaN
-        except Exception as e:
-             print(f"Error calculating feature distance: {e}")
-             return 1.0 # Return max distance on error
+        """Calculate distance between two face features using face_recognition"""
+        if feature1 is None or feature2 is None:
+            return float('inf')
+        # Using face_recognition's face_distance which is optimized for dlib encodings
+        return face_recognition.face_distance([feature1], feature2)[0]
 
     def _update_feature_history(self, track_id, new_feature):
         """Update feature history for a track and compute average feature"""
@@ -244,60 +250,90 @@ class PersonTracker:
         return avg_feature
 
     def _find_best_face_match(self, face_feature, current_time):
-        """Find the best matching face in the database with improved matching logic"""
+        """Find best match with improved matching logic based on face_recognition library"""
         best_match_id = -1
+        best_match_name = "UNK"
         min_distance = float('inf')
-        best_name = "UNK"  # Default to unknown
         
-        # First, try to match with known people
+        # --- FIRST CHECK: Match with known people ---
+        # Flatten all known encodings and names for direct comparison
+        all_known_encodings = []
+        all_known_names = []
+        
         for name, data in self.known_people.items():
-            for ref_feature in data['features']:
-                distance = self._calculate_feature_distance(face_feature, ref_feature)
-                if distance < self.feature_threshold and distance < min_distance:
-                    min_distance = distance
-                    best_name = name
-                    # Look for existing track with this name to maintain duration
-                    for track_id, track_data in self.tracked_objects.items():
-                        if track_data.get('name') == name and track_data.get('active', False):
-                            best_match_id = track_id
-                            break
+            for known_feature in data['features']:
+                all_known_encodings.append(known_feature)
+                all_known_names.append(name)
         
-        # If no match in known people, try active tracks for re-identification
-        if best_name == "UNK":
-            for db_id, db_entry in self.face_database.items():
-                if 'feature' not in db_entry or db_entry['feature'] is None:
+        if all_known_encodings:  # Only try matching if we have known faces
+            # Calculate all distances at once (more efficient)
+            face_distances = face_recognition.face_distance(all_known_encodings, face_feature)
+            print(f"Face distances: {face_distances}")
+            
+            # Check if any match is below threshold
+            if len(face_distances) > 0 and min(face_distances) < self.feature_threshold:
+                best_idx = face_distances.argmin()
+                min_distance = face_distances[best_idx]
+                best_match_name = all_known_names[best_idx]
+                print(f"Found match for known person {best_match_name} with distance {min_distance:.4f}")
+                
+                # Look for existing track with this name to maintain duration
+                for track_id, track_data in self.tracked_objects.items():
+                    if track_data.get('name') == best_match_name and track_data.get('active', False):
+                        best_match_id = track_id
+                        break
+
+        # --- SECOND CHECK: If no known person match, try recent tracks ---
+        if best_match_id == -1 and best_match_name == "UNK":
+            # Collect all recent faces from face database
+            recent_faces = []
+            recent_ids = []
+            
+            for track_id, track_data in self.face_database.items():
+                if current_time - track_data['last_seen'] > self.reid_time_window:
                     continue
                 
-                # Calculate time since last seen
-                time_since_last_seen = current_time - db_entry['last_seen']
-                
-                # Use different thresholds based on recency
-                threshold = self.reidentification_threshold if time_since_last_seen < 5.0 else self.feature_threshold
-                
-                # Compare with average feature if available
-                if db_id in self.feature_history:
-                    avg_feature = np.mean(self.feature_history[db_id], axis=0)
-                    distance = self._calculate_feature_distance(face_feature, avg_feature)
+                # Get the best feature for this track
+                if track_id in self.feature_history and len(self.feature_history[track_id]) > 0:
+                    # Use average of recent features
+                    avg_feature = np.mean(self.feature_history[track_id], axis=0)
+                    recent_faces.append(avg_feature)
+                elif 'feature' in track_data:
+                    recent_faces.append(track_data['feature'])
                 else:
-                    distance = self._calculate_feature_distance(face_feature, db_entry['feature'])
+                    continue
                 
-                if distance < threshold and distance < min_distance:
-                    min_distance = distance
-                    best_match_id = db_id
-        
-        return best_match_id, best_name, min_distance
+                recent_ids.append(track_id)
+            
+            # If we have recent faces, compare with them
+            if recent_faces:
+                face_distances = face_recognition.face_distance(recent_faces, face_feature)
+                
+                if len(face_distances) > 0 and min(face_distances) < self.reidentification_threshold:
+                    best_idx = face_distances.argmin()
+                    min_distance = face_distances[best_idx]
+                    best_match_id = recent_ids[best_idx]
+                    print(f"Re-identified track {best_match_id} with distance {min_distance:.4f}")
+
+        return best_match_id, best_match_name, min_distance
 
     def update(self, frame, detections, current_time=None):
-        """Update tracks using Face Features only with improved stability."""
+        """Update tracks with performance optimizations for speed."""
         if current_time is None:
             current_time = time.time()
+        
+        # Track frame count for skipping face detection
+        self.frame_count += 1
+        should_detect_faces = (self.frame_count % self.face_detection_interval == 0) and \
+                               (current_time - self.last_face_detection_time >= self.min_face_detection_interval)
         
         active_objects = {}
         matched_track_ids = set()
         matched_temp_ids = set()
         newly_detected_indices = set(range(len(detections)))
         
-        # --- STEP 1: First try to match active permanent tracks by face ---
+        # --- STEP 1: First try to match active permanent tracks by location ---
+        # This is much faster than face matching and handles most cases
         active_permanent_tracks = {id: data for id, data in self.tracked_objects.items() 
                                  if data.get('active', True) and not isinstance(id, str)}
         
@@ -306,36 +342,24 @@ class PersonTracker:
                 if not track_data.get('active', True):
                     continue
                 
-                # Try to find the best matching detection for this track
+                # Try to find the best matching detection using IoU (much faster than face matching)
+                track_bbox = track_data['bbox']
                 best_det_idx = -1
-                best_distance = float('inf')
+                best_iou = 0.3  # Threshold for IoU matching
                 
                 for det_idx in newly_detected_indices:
-                    bbox = detections[det_idx]['bbox']
-                    face_feature = self._extract_face_feature(frame, bbox)
+                    det_bbox = detections[det_idx]['bbox']
+                    iou = self._calculate_iou(track_bbox, det_bbox)
                     
-                    if face_feature is not None and track_id in self.feature_history:
-                        # Compare with average feature
-                        avg_feature = np.mean(self.feature_history[track_id], axis=0)
-                        distance = self._calculate_feature_distance(face_feature, avg_feature)
-                        
-                        if distance < self.reidentification_threshold and distance < best_distance:
-                            best_distance = distance
-                            best_det_idx = det_idx
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_det_idx = det_idx
                 
                 if best_det_idx != -1:
-                    # Update track with new detection
+                    # Update track with new detection (IoU matched)
                     bbox = detections[best_det_idx]['bbox']
-                    face_feature = self._extract_face_feature(frame, bbox)
-                    
                     self.tracked_objects[track_id]['bbox'] = bbox
                     self.tracked_objects[track_id]['last_seen'] = current_time
-                    
-                    # Update feature history
-                    if face_feature is not None:
-                        avg_feature = self._update_feature_history(track_id, face_feature)
-                        self.face_database[track_id]['feature'] = avg_feature
-                        self.face_database[track_id]['last_seen'] = current_time
                     
                     # Ensure time tracking continues
                     if track_id in self.time_data:
@@ -347,7 +371,10 @@ class PersonTracker:
                     matched_track_ids.add(track_id)
                     newly_detected_indices.remove(best_det_idx)
         
-        # --- STEP 2: Process remaining detections ---
+        # --- STEP 2: Process remaining detections with face detection (only on some frames) ---
+        if should_detect_faces:
+            self.last_face_detection_time = current_time
+            
         for det_idx in list(newly_detected_indices):
             bbox = detections[det_idx]['bbox']
             face_feature = self._extract_face_feature(frame, bbox)
@@ -400,8 +427,6 @@ class PersonTracker:
                             self.known_people_tracks[name] = []
                         self.known_people_tracks[name].append(new_id)
                         print(f"New track {new_id} created for known person {name} (Total tracks: {len(self.known_people_tracks[name])})")
-                    else:
-                        print(f"New track created for unknown person (ID: {new_id})")
                     
                     # Initialize feature history and database
                     self._update_feature_history(new_id, face_feature)
@@ -421,6 +446,19 @@ class PersonTracker:
                     
                     matched_track_ids.add(new_id)
         
+        # Create temporary tracks for remaining detections (without face detection)
+        for det_idx in newly_detected_indices:
+            bbox = detections[det_idx]['bbox']
+            temp_id = f"temp_{self.temp_id_counter}"
+            self.temp_id_counter += 1
+            
+            self.unidentified_tracks[temp_id] = {
+                'bbox': bbox,
+                'first_seen': current_time,
+                'last_seen': current_time
+            }
+            matched_temp_ids.add(temp_id)
+        
         # --- Update status of existing tracks ---
         for obj_id in list(self.tracked_objects.keys()):
             if obj_id not in matched_track_ids:
@@ -436,6 +474,13 @@ class PersonTracker:
                                 interval_duration = current_time - intervals[-1][0]
                                 self.time_data[obj_id]['total_active_time'] += interval_duration
                                 self.time_data[obj_id]['last_seen'] = current_time
+        
+        # Update temporary tracks
+        for temp_id in list(self.unidentified_tracks.keys()):
+            if temp_id not in matched_temp_ids:
+                if current_time - self.unidentified_tracks[temp_id]['last_seen'] > self.disappear_threshold:
+                    # Remove temporary track if disappeared
+                    del self.unidentified_tracks[temp_id]
         
         # Return combined tracks for visualization
         combined_tracks = self.tracked_objects.copy()
@@ -564,66 +609,19 @@ class PersonTracker:
 class CameraManager:
     def __init__(self, camera_ids=None):
         self.cameras = {}  # {id: {'cap': VideoCapture, 'frame': frame, 'thread': thread, 'running': bool}}
-        self.frame_queues = {}  # {id: queue}
-        self.frame_buffers = {}  # {id: deque} - to smooth out frame delivery
+        self.frame_queues = {}  # {id: Queue} - Raw frames from camera
+        self.processed_frame_queues = {}  # {id: Queue} - Processed frames with detections
+        self.frame_buffers = {}  # {id: deque} - Smooth display buffer
+        self.max_queue_size = 5  # Maximum frames in processing queue (smaller to reduce latency)
+        self.max_processed_queue_size = 2  # Only keep the most recent processed frames
         
         if camera_ids:
             for cam_id in camera_ids:
                 self.add_camera(cam_id)
     
-    def add_camera(self, camera_id):
-        """Add a new camera to the manager"""
-        try:
-            # Convert to int if it's a numeric string
-            if isinstance(camera_id, str) and camera_id.isdigit():
-                camera_id = int(camera_id)
-                
-            # Create video capture
-            cap = cv2.VideoCapture(camera_id)
-            if not cap.isOpened():
-                return False, f"Could not open camera {camera_id}"
-            
-            # Create frame queue and buffer
-            frame_queue = queue.Queue(maxsize=30)  # Buffer up to 30 frames
-            frame_buffer = deque(maxlen=5)  # Smooth delivery with 5-frame buffer
-            
-            # Store camera info
-            self.cameras[camera_id] = {
-                'cap': cap,
-                'frame': None,
-                'thread': None,
-                'running': False
-            }
-            self.frame_queues[camera_id] = frame_queue
-            self.frame_buffers[camera_id] = frame_buffer
-            
-            return True, f"Camera {camera_id} added successfully"
-        except Exception as e:
-            return False, f"Error adding camera {camera_id}: {str(e)}"
-    
-    def start_camera(self, camera_id):
-        """Start capturing frames from a camera"""
-        if camera_id not in self.cameras:
-            return False, f"Camera {camera_id} not found"
-        
-        if self.cameras[camera_id]['running']:
-            return True, f"Camera {camera_id} already running"
-        
-        # Set running flag
-        self.cameras[camera_id]['running'] = True
-        
-        # Start capture thread
-        thread = threading.Thread(
-            target=self._capture_frames,
-            args=(camera_id,),
-            daemon=True
-        )
-        thread.start()
-        
-        # Store thread
-        self.cameras[camera_id]['thread'] = thread
-        
-        return True, f"Camera {camera_id} started"
+    def get_camera_ids(self):
+        """Get list of camera IDs"""
+        return list(self.cameras.keys())
     
     def stop_camera(self, camera_id):
         """Stop capturing frames from a camera"""
@@ -640,26 +638,20 @@ class CameraManager:
         if self.cameras[camera_id]['thread']:
             self.cameras[camera_id]['thread'].join(timeout=1.0)
         
-        # Clear frame queue
+        # Clear frame queues
         while not self.frame_queues[camera_id].empty():
             try:
                 self.frame_queues[camera_id].get_nowait()
             except queue.Empty:
                 break
         
+        while not self.processed_frame_queues[camera_id].empty():
+            try:
+                self.processed_frame_queues[camera_id].get_nowait()
+            except queue.Empty:
+                break
+        
         return True, f"Camera {camera_id} stopped"
-    
-    def get_frame(self, camera_id):
-        """Get the latest frame from a camera"""
-        if camera_id not in self.cameras:
-            return False, None, f"Camera {camera_id} not found"
-        
-        # If buffer has frames, return the latest
-        if self.frame_buffers[camera_id]:
-            return True, self.frame_buffers[camera_id][-1], None
-        
-        # Otherwise return the last captured frame or None
-        return True, self.cameras[camera_id]['frame'], None
     
     def start_all_cameras(self):
         """Start all cameras"""
@@ -699,74 +691,118 @@ class CameraManager:
         # Remove from dictionaries
         del self.cameras[camera_id]
         del self.frame_queues[camera_id]
+        del self.processed_frame_queues[camera_id]
         del self.frame_buffers[camera_id]
         
         return True, f"Camera {camera_id} removed"
     
-    def get_camera_ids(self):
-        """Get list of camera IDs"""
-        return list(self.cameras.keys())
+    def add_camera(self, camera_id):
+        """Add a new camera to the manager"""
+        try:
+            # Convert to int if it's a numeric string
+            if isinstance(camera_id, str) and camera_id.isdigit():
+                camera_id = int(camera_id)
+                
+            # Create video capture with optimized settings
+            cap = cv2.VideoCapture(camera_id)
+            if not cap.isOpened():
+                return False, f"Could not open camera {camera_id}"
+            
+            # Set camera properties for better performance
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffer to reduce latency
+            cap.set(cv2.CAP_PROP_FPS, 30)  # Request 30fps if camera supports it
+            
+            # Create frame queues and buffer
+            self.frame_queues[camera_id] = queue.Queue(maxsize=self.max_queue_size)
+            self.processed_frame_queues[camera_id] = queue.Queue(maxsize=self.max_processed_queue_size)
+            self.frame_buffers[camera_id] = deque(maxlen=2)  # Only need latest frame for display
+            
+            # Store camera info
+            self.cameras[camera_id] = {
+                'cap': cap,
+                'frame': None,
+                'thread': None,
+                'running': False,
+                'last_capture_time': 0,
+                'fps': 0
+            }
+            
+            return True, f"Camera {camera_id} added successfully"
+        except Exception as e:
+            return False, f"Error adding camera {camera_id}: {str(e)}"
+    
+    def start_camera(self, camera_id):
+        """Start capturing frames from a camera in a dedicated thread"""
+        if camera_id not in self.cameras:
+            return False, f"Camera {camera_id} not found"
+        
+        if self.cameras[camera_id]['running']:
+            return True, f"Camera {camera_id} already running"
+        
+        # Set running flag
+        self.cameras[camera_id]['running'] = True
+        
+        # Start capture thread
+        thread = threading.Thread(
+            target=self._capture_frames,
+            args=(camera_id,),
+            daemon=True
+        )
+        thread.start()
+        
+        # Store thread
+        self.cameras[camera_id]['thread'] = thread
+        
+        return True, f"Camera {camera_id} started"
     
     def _capture_frames(self, camera_id):
-        """Continuously capture frames from a camera (run in a thread)"""
+        """Dedicated thread for capturing frames from camera at maximum speed"""
         cap = self.cameras[camera_id]['cap']
         frame_queue = self.frame_queues[camera_id]
-        frame_buffer = self.frame_buffers[camera_id]
         
-        # Set camera properties for better performance
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)  # Minimize buffer size to reduce latency
-        
-        last_frame_time = time.time()
-        consecutive_errors = 0
+        frame_count = 0
+        start_time = time.time()
+        last_fps_update = start_time
         
         while self.cameras[camera_id]['running']:
             try:
-                # Read a new frame
+                # Read frame as fast as possible
                 ret, frame = cap.read()
-                
                 if not ret:
-                    # Handle read errors
-                    consecutive_errors += 1
-                    if consecutive_errors > 5:
-                        # Try to reopen the camera after multiple failures
-                        cap.release()
-                        time.sleep(0.5)
-                        cap = cv2.VideoCapture(camera_id)
-                        self.cameras[camera_id]['cap'] = cap
-                        consecutive_errors = 0
-                    time.sleep(0.1)
+                    time.sleep(0.001)  # Tiny sleep to avoid CPU spin
                     continue
                 
-                consecutive_errors = 0
                 current_time = time.time()
+                frame_count += 1
                 
-                # Store the frame
-                self.cameras[camera_id]['frame'] = frame
+                # Update FPS calculation every second
+                if current_time - last_fps_update >= 1.0:
+                    self.cameras[camera_id]['fps'] = frame_count / (current_time - start_time)
+                    frame_count = 0
+                    start_time = current_time
+                    last_fps_update = current_time
                 
-                # Try to add to the frame queue for processing
+                # Record last successful capture time
+                self.cameras[camera_id]['last_capture_time'] = current_time
+                
+                # Always replace oldest frame if queue is full
                 try:
+                    # Try non-blocking put first
                     frame_queue.put_nowait((frame, current_time))
                 except queue.Full:
-                    # If queue is full, skip this frame
-                    pass
-                
-                # Add to the smoothing buffer
-                frame_buffer.append(frame)
-                
-                # Calculate appropriate sleep time to maintain desired FPS
-                # Aim for 30 FPS (33.3ms per frame) but adjust based on actual processing time
-                elapsed = current_time - last_frame_time
-                sleep_time = max(0, (1/30) - elapsed)
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                
-                last_frame_time = time.time()
+                    # If full, remove oldest and then add new frame
+                    try:
+                        frame_queue.get_nowait()
+                        frame_queue.put_nowait((frame, current_time))
+                    except (queue.Empty, queue.Full):
+                        # In case of race condition, just continue
+                        pass
                 
             except Exception as e:
-                print(f"Error capturing frame from camera {camera_id}: {str(e)}")
-                time.sleep(0.1)
+                print(f"Error capturing frame from camera {camera_id}: {e}")
+                time.sleep(0.01)  # Short sleep on error
         
-        print(f"Stopping capture for camera {camera_id}")
+        print(f"Camera {camera_id} capture thread stopped")
 
 
 class PeopleTrackingGUI:
@@ -884,18 +920,30 @@ class PeopleTrackingGUI:
         self.camera_canvases = {}  # {camera_id: canvas}
         self.camera_photos = {}  # {camera_id: PhotoImage} - Store PhotoImage refs
         
-        # Processing thread and display update loop
+        # Improved thread control and monitoring
         self.processing_thread = None
-        self.display_update_ms = 50 # Update display every ~50ms (20 FPS target)
-        self._display_after_id = None # To cancel pending display updates
+        self.display_thread = None
+        self.is_tracking = False
+        self.processing_active = False
+        self.display_active = False
+        
+        # Control rates for different operations
+        self.frame_process_delay = 0.033  # ~30 FPS target for processing
+        self.display_update_ms = 50  # ~20 FPS target for display
+        
+        # Performance monitoring
+        self.processing_fps = 0
+        self.display_fps = 0
+        self.processing_frame_count = 0
+        self.display_frame_count = 0
+        self.process_start_time = 0
+        self.display_start_time = 0
         
         # Protocol for window closing
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self.log_message("Application started. Add cameras and click 'Start Tracking'.")
         self.log_message(f"Using device: {device}")
-        if DeepFace is None:
-            self.log_message("WARNING: DeepFace library failed to load. Face Re-ID disabled.")
         
         # Add default camera
         self.add_camera() # This calls setup_camera_grid
@@ -1031,10 +1079,6 @@ class PeopleTrackingGUI:
         if model is None:
              messagebox.showerror("Error", "YOLO model not loaded. Cannot start tracking.")
              return
-        if DeepFace is None:
-             # Warn but allow continuing without face re-id
-             messagebox.showwarning("Warning", "DeepFace library not loaded. Face Re-ID will be disabled.")
-
 
         # Start all cameras first
         self.log_message("Starting cameras...")
@@ -1052,18 +1096,39 @@ class PeopleTrackingGUI:
             return
         
         self.is_tracking = True
+        self.processing_active = True
+        self.display_active = True
+        
+        # Reset performance counters
+        self.processing_frame_count = 0
+        self.display_frame_count = 0
+        self.process_start_time = time.time()
+        self.display_start_time = time.time()
+        
+        # Update UI state
         self.btn_start.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
-        self.btn_add_camera.config(state=tk.DISABLED) # Disable add/remove during tracking
+        self.btn_add_camera.config(state=tk.DISABLED)
         self.btn_remove_camera.config(state=tk.DISABLED)
         
-        # Start processing thread
-        self.processing_thread = threading.Thread(target=self.process_frames_loop)
-        self.processing_thread.daemon = True
+        # Start processing thread (runs independently)
+        self.processing_thread = threading.Thread(
+            target=self.process_frames_loop, 
+            daemon=True, 
+            name="ProcessingThread"
+        )
         self.processing_thread.start()
         
-        # Start display update loop
-        self.update_display_loop() # Start the periodic GUI update
+        # Start display thread (runs independently)
+        self.display_thread = threading.Thread(
+            target=self.display_frames_loop,
+            daemon=True,
+            name="DisplayThread"
+        )
+        self.display_thread.start()
+        
+        # Start stats update loop
+        self.update_stats_loop()
 
         self.log_message(f"Tracking started with {len(camera_ids)} cameras.")
     
@@ -1071,160 +1136,301 @@ class PeopleTrackingGUI:
         if not self.is_tracking:
             return
 
-        self.is_tracking = False # Signal processing loop to stop
-
-        # Cancel any pending display updates
-        if self._display_after_id:
-             self.window.after_cancel(self._display_after_id)
-             self._display_after_id = None
+        # Signal all threads to stop
+        self.is_tracking = False
+        self.processing_active = False
+        self.display_active = False
 
         # Wait for processing thread to finish (add a timeout)
         if self.processing_thread and self.processing_thread.is_alive():
              self.log_message("Waiting for processing thread to finish...")
-             self.processing_thread.join(timeout=2.0) # Wait max 2 seconds
+             self.processing_thread.join(timeout=1.0)
              if self.processing_thread.is_alive():
                  self.log_message("Warning: Processing thread did not exit cleanly.")
+                 
+        # Wait for display thread to finish
+        if self.display_thread and self.display_thread.is_alive():
+             self.log_message("Waiting for display thread to finish...")
+             self.display_thread.join(timeout=1.0)
+             if self.display_thread.is_alive():
+                 self.log_message("Warning: Display thread did not exit cleanly.")
 
         # Stop all cameras (releases resources)
         self.log_message("Stopping cameras...")
         self.camera_manager.stop_all_cameras()
         
+        # Update UI state
         self.btn_start.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
         self.btn_add_camera.config(state=tk.NORMAL)
         self.btn_remove_camera.config(state=tk.NORMAL)
 
-        # Reset FPS counter
+        # Reset stats
         self.fps_var.set("FPS: 0")
         self.people_count_var.set("People count: 0")
 
         self.log_message("Tracking stopped.")
 
-
     def process_frames_loop(self):
-        """Dedicated thread for processing frames from all cameras."""
-        frame_count_total = 0
-        start_time_total = time.time()
-        last_fps_update_time = start_time_total
+        """Dedicated thread that processes frames at a controlled rate"""
+        self.log_message("Processing thread started")
+        frame_count = 0
+        start_time = time.time()
+        last_fps_update = start_time
+        camera_ids = self.camera_manager.get_camera_ids()
         
-        while self.is_tracking:
-            current_loop_start_time = time.time()
+        # Create a processing queue to handle one camera at a time
+        camera_queue = deque(camera_ids)
+        
+        # Using separate detection and tracking batches for better parallelism
+        detection_batch = {}  # Store frames for object detection
+        tracking_results = {}  # Store tracking results
+        
+        while self.processing_active:
+            process_start = time.time()
             processed_this_loop = False
-
-            camera_ids = self.camera_manager.get_camera_ids()
-            active_people_counts = {} # Store counts per camera {cam_id: count}
-
-            for camera_id in camera_ids:
-                # Get latest frame from the buffer
-                success, frame, error = self.camera_manager.get_frame(camera_id)
-
-                if not success or frame is None:
-                    # Optional: log if frame retrieval fails often
-                    # print(f"Skipping frame for camera {camera_id}, not available.")
-                    continue # Skip to next camera if no frame
+            active_people_counts = {}
+            
+            if not camera_queue:
+                camera_queue.extend(camera_ids)  # Refill the queue if empty
+            
+            # Process one camera per iteration for more balanced processing
+            if camera_queue:
+                camera_id = camera_queue[0]
+                camera_queue.popleft()  # Remove the camera we're about to process
                 
-                processed_this_loop = True
                 try:
-                    # --- Core Processing ---
-                    # 1. Detect people (YOLO)
+                    # Try to get the latest frame from the queue
+                    try:
+                        frame, timestamp = self.camera_manager.frame_queues[camera_id].get_nowait()
+                    except queue.Empty:
+                        time.sleep(0.001)  # Tiny sleep to avoid CPU spin
+                        continue
+
+                    processed_this_loop = True
+                    
+                    # Store frame for detection
+                    detection_batch[camera_id] = frame
+                    
+                    # STEP 1: Run object detection (expensive but needed for all frames)
                     detections = self.detect_people(frame)
                     
-                    # 2. Update tracker (IoU + Face Re-ID)
+                    # STEP 2: Update tracker (IoU + occasional Face Re-ID)
                     tracker = self.trackers[camera_id]
-                    tracked_objects = tracker.update(frame, detections) # Pass frame for feature extraction
+                    tracked_objects = tracker.update(frame, detections)
                     
-                    # 3. Draw results (on a copy)
-                    result_frame = self.draw_results(frame, tracked_objects)
+                    # Store tracking results
+                    tracking_results[camera_id] = tracked_objects
                     
-                    # 4. Store result frame for display update
-                    # We update the display in a separate loop to avoid blocking this thread
-                    # For simplicity here, we'll call display_frame directly, but it can lag the processing.
-                    # A better way is queueing frames for display update loop.
-                    # self.display_frame(camera_id, result_frame) # Direct update (can lag)
-
-                    # Store the frame to be displayed later by the update_display_loop
-                    # Need a mechanism to store these... maybe a shared dict?
-                    # For now, let's update directly for simplicity, but acknowledge the lag risk.
-
-
-                    # --- Statistics ---
+                    # STEP 3: Draw results (on a copy)
+                    result_frame = self.draw_results(frame.copy(), tracked_objects)
+                    
+                    # Track statistics
                     active_count = sum(1 for obj in tracked_objects.values() if obj.get('active', False))
                     active_people_counts[camera_id] = active_count
-                    frame_count_total += 1
+                    frame_count += 1
+                    self.processing_frame_count += 1
+                    
+                    # Store processed frame result - always replace older frames
+                    try:
+                        # Non-blocking put
+                        self.camera_manager.processed_frame_queues[camera_id].put_nowait(
+                            (result_frame, tracked_objects)
+                        )
+                    except queue.Full:
+                        # If full, clear and add new frame
+                        try:
+                            self.camera_manager.processed_frame_queues[camera_id].get_nowait()
+                            self.camera_manager.processed_frame_queues[camera_id].put_nowait(
+                                (result_frame, tracked_objects)
+                            )
+                        except (queue.Empty, queue.Full):
+                            pass
                     
                 except Exception as e:
                     self.log_message(f"Error processing frame from camera {camera_id}: {str(e)}")
-                    # Optionally display an error indicator on the canvas?
 
-            # --- Update Global Stats periodically ---
+            # Calculate processing rate
             current_time = time.time()
-            if current_time - last_fps_update_time >= 1.0:
-                elapsed_total = current_time - start_time_total
-                if elapsed_total > 0:
-                    fps = frame_count_total / elapsed_total
-                self.fps_var.set(f"FPS: {fps:.2f}")
-
-                # Update total people count (sum across cameras)
+            if current_time - last_fps_update >= 1.0:
+                # Update processing FPS counter
+                elapsed = current_time - start_time
+                if elapsed > 0:
+                    self.processing_fps = frame_count / elapsed
+                    
+                # Reset counters
+                frame_count = 0
+                start_time = current_time
+                last_fps_update = current_time
+                
+                # Update total active people count
                 total_people = sum(active_people_counts.values())
-                self.people_count_var.set(f"People count: {total_people}")
-
-                # Reset for next interval
-                start_time_total = current_time
-                frame_count_total = 0
-                last_fps_update_time = current_time
-
-
-            # --- Control loop speed ---
-            # Avoid busy-waiting if no frames were processed
-            if not processed_this_loop:
-                 time.sleep(0.05) # Sleep longer if no cameras active/returning frames
+                
+                # Schedule UI update on main thread
+                self.window.after(0, lambda: self.people_count_var.set(f"People count: {total_people}"))
+            
+            # Control the processing rate - sleep only if we processed a frame
+            if processed_this_loop:
+                process_time = time.time() - process_start
+                sleep_time = max(0, self.frame_process_delay - process_time)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
             else:
-                 # Add a small sleep to yield CPU, prevent 100% usage
-                 loop_duration = time.time() - current_loop_start_time
-                 sleep_time = max(0.005, 0.01 - loop_duration) # Aim for ~100Hz loop max, min 5ms sleep
-                 time.sleep(sleep_time)
-
-
-    def update_display_loop(self):
-         """Periodically updates the GUI canvases with the latest processed frames."""
-         if not self.is_tracking:
-             return # Stop loop if tracking stopped
-
-         update_start_time = time.time()
-
-         camera_ids = self.camera_manager.get_camera_ids()
-         for camera_id in camera_ids:
-             if camera_id not in self.camera_canvases: continue # Skip if canvas removed
-
-             # Get the *latest* available frame (might be slightly behind processing)
-             success, frame_to_display, _ = self.camera_manager.get_frame(camera_id)
-
-             if success and frame_to_display is not None:
-                 # Re-run detection and drawing for display? No, use processed frame.
-                 # Problem: process_frames_loop doesn't store processed frames efficiently for this loop.
-                 # --- TEMPORARY WORKAROUND: Re-process frame for display ---
-                 # This is INEFFICIENT. A proper solution needs a shared structure
-                 # (like a dictionary mapping camera_id to latest processed_frame).
-                 try:
-                     tracker = self.trackers[camera_id]
-                     # Get current state without updating tracker again
-                     tracked_objects_state = tracker.tracked_objects # Get current dict
-                     display_frame = self.draw_results(frame_to_display, tracked_objects_state)
-                     self.display_frame(camera_id, display_frame)
-                 except Exception as e:
-                     self.log_message(f"Error preparing display frame for {camera_id}: {e}")
-                     # Optionally display the raw frame on error
-                     # self.display_frame(camera_id, frame_to_display)
-             # else: Keep last displayed frame or show placeholder?
-
-
-         # Schedule the next update
-         # Adjust delay based on how long this update took?
-         update_duration = time.time() - update_start_time
-         next_update_delay = max(10, self.display_update_ms - int(update_duration * 1000)) # Min 10ms delay
-
-         self._display_after_id = self.window.after(next_update_delay, self.update_display_loop)
-
+                # If no frames were processed, add a tiny sleep to avoid CPU spin
+                time.sleep(0.001)
+        
+        self.log_message("Processing thread stopped")
+    
+    def display_frames_loop(self):
+        """Dedicated thread that updates the GUI at a controlled rate"""
+        self.log_message("Display thread started")
+        frame_count = 0
+        start_time = time.time()
+        last_fps_update = start_time
+        
+        while self.display_active:
+            display_start = time.time()
+            displayed_this_loop = False
+            
+            for camera_id in self.camera_manager.get_camera_ids():
+                # Skip if no canvas exists for this camera
+                if camera_id not in self.camera_canvases:
+                    continue
+                    
+                try:
+                    # Try to get the latest processed frame
+                    try:
+                        result_frame, _ = self.camera_manager.processed_frame_queues[camera_id].get_nowait()
+                        
+                        # Convert and prepare for display (in this thread)
+                        display_image = self.prepare_display_image(camera_id, result_frame)
+                        
+                        # Schedule the actual canvas update on the main thread
+                        self.window.after(0, lambda cam=camera_id, img=display_image: 
+                                          self.update_canvas(cam, img))
+                        
+                        displayed_this_loop = True
+                        frame_count += 1
+                        self.display_frame_count += 1
+                        
+                    except queue.Empty:
+                        # No new frames to display
+                        pass
+                    
+                except Exception as e:
+                    self.log_message(f"Error displaying frame from camera {camera_id}: {str(e)}")
+            
+            # Calculate display rate
+            current_time = time.time()
+            if current_time - last_fps_update >= 1.0:
+                # Update display FPS counter
+                elapsed = current_time - start_time
+                if elapsed > 0:
+                    self.display_fps = frame_count / elapsed
+                
+                # Reset counters
+                frame_count = 0
+                start_time = current_time
+                last_fps_update = current_time
+            
+            # Control the display rate - sleep only if we displayed a frame
+            if displayed_this_loop:
+                display_time = time.time() - display_start
+                sleep_time = max(0, (self.display_update_ms / 1000.0) - display_time)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+            else:
+                # If no frames were displayed, add a tiny sleep to avoid CPU spin
+                time.sleep(0.01)
+        
+        self.log_message("Display thread stopped")
+    
+    def prepare_display_image(self, camera_id, frame):
+        """Prepares a frame for display by converting it to Tkinter PhotoImage"""
+        canvas = self.camera_canvases[camera_id]
+        canvas_width = canvas.winfo_width()
+        canvas_height = canvas.winfo_height()
+        
+        # If canvas dimensions are invalid, use default size
+        if canvas_width <= 1 or canvas_height <= 1:
+            canvas_width = 320
+            canvas_height = 240
+        
+        # Calculate aspect ratio preserving resize
+        frame_height, frame_width = frame.shape[:2]
+        if frame_width == 0 or frame_height == 0:
+            return None  # Skip empty frame
+            
+        scale = min(canvas_width / frame_width, canvas_height / frame_height)
+        new_width = int(frame_width * scale)
+        new_height = int(frame_height * scale)
+        
+        # Resize frame efficiently
+        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        
+        # Convert BGR to RGB for PIL -> Tkinter
+        img = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(img)
+        photo = ImageTk.PhotoImage(image=img_pil)
+        
+        return photo
+    
+    def update_canvas(self, camera_id, photo):
+        """Updates a canvas with the new image (called on main thread)"""
+        if not self.is_tracking or camera_id not in self.camera_canvases:
+            return
+            
+        canvas = self.camera_canvases[camera_id]
+        
+        # Store reference to prevent garbage collection
+        self.camera_photos[camera_id] = photo
+        
+        # Find existing image item and update it
+        img_item = canvas.find_withtag("frame_img")
+        if img_item:
+            canvas.itemconfig(img_item, image=photo)
+        else:
+            # Create new image if none exists
+            canvas_width = canvas.winfo_width() or 320
+            canvas_height = canvas.winfo_height() or 240
+            canvas.create_image(
+                canvas_width // 2, 
+                canvas_height // 2, 
+                image=photo, 
+                anchor=tk.CENTER, 
+                tags="frame_img"
+            )
+    
+    def update_stats_loop(self):
+        """Updates performance statistics in the UI"""
+        if not self.is_tracking:
+            return
+            
+        # Update FPS display with both processing and display rates
+        fps_text = f"Processing: {self.processing_fps:.1f} FPS | Display: {self.display_fps:.1f} FPS"
+        
+        # Add camera capture FPS if available
+        camera_fps = []
+        for camera_id, camera_data in self.camera_manager.cameras.items():
+            if 'fps' in camera_data:
+                camera_fps.append(f"Cam {camera_id}: {camera_data['fps']:.1f}")
+        
+        if camera_fps:
+            camera_fps_text = " | ".join(camera_fps)
+            # Include camera FPS in the main display
+            fps_text += f" | {camera_fps_text}"
+        
+        # Update the FPS display
+        self.fps_var.set(fps_text)
+        
+        # Also log the FPS data periodically (every 5 seconds) to avoid log spam
+        current_time = time.time()
+        if not hasattr(self, "_last_fps_log") or current_time - self._last_fps_log >= 5.0:
+            self.log_message(f"FPS Stats: {fps_text}")
+            self._last_fps_log = current_time
+        
+        # Schedule next update (100ms for more responsive UI)
+        self.window.after(100, self.update_stats_loop)
     
     def detect_people(self, frame):
         """Detect people in a frame using YOLOv8"""
@@ -1233,7 +1439,6 @@ class PeopleTrackingGUI:
         
         try:
             # Ensure frame is in expected format (e.g., BGR numpy array)
-        # Run inference
             results = model(frame, conf=self.conf_threshold.get(), classes=[0], verbose=False, device=device) # class 0 is person, disable verbose logging
 
             if results and len(results) > 0:
@@ -1254,12 +1459,12 @@ class PeopleTrackingGUI:
         
         return detections
     
-    
     def draw_results(self, frame, tracked_objects):
-        """Draw bounding boxes and IDs on the frame"""
+        """Draw bounding boxes and labels with duration for tracked objects"""
         result = frame.copy()
         current_time = time.time()
         
+        # Draw all tracked objects
         for obj_id, obj_data in tracked_objects.items():
             if not obj_data.get('active', True):
                 continue # Don't draw inactive tracks
@@ -1270,84 +1475,68 @@ class PeopleTrackingGUI:
             is_temporary = obj_data.get('is_temporary', False)
             name = obj_data.get('name', 'UNK')
             
+            # Calculate duration
             if is_temporary:
-                # Yellow color for temporary tracks (waiting for face)
-                color = (0, 255, 255)  # Yellow in BGR
-                
-                # For temporary tracks, calculate time since first seen
                 if 'first_seen' in obj_data:
-                    time_visible = current_time - obj_data['first_seen']
-                    time_str = self._format_duration(time_visible)
+                    duration = current_time - obj_data['first_seen']
+                    duration_str = self._format_duration(duration)
                 else:
-                    time_str = "00:00:00"
-                
-                # Display as temporary ID
-                label = f"Waiting for face\n{time_str}"
-            else:
-                # Regular track with permanent ID
-                # Calculate active time from intervals
-                active_time = 0
-                camera_id = list(self.trackers.keys())[0] if self.trackers else 0  # Default to first camera
-                
-                if obj_id in self.trackers[camera_id].time_data:
-                    time_info = self.trackers[camera_id].time_data[obj_id]
-                    active_intervals = time_info.get('active_intervals', [])
+                    duration_str = "00:00:00"
                     
-                    for interval in active_intervals:
-                        start = interval[0]
-                        end = interval[1] if interval[1] is not None else current_time
-                        active_time += end - start
-
-                time_str = self._format_duration(active_time)
+                # Yellow color for temporary tracks
+                color = (0, 255, 255)  # Yellow in BGR
+                label = f"Waiting... ({duration_str})"
+            else:
+                # For regular tracks, find the time data in tracker
+                if isinstance(obj_id, str):
+                    # This is a temp ID with no time data yet
+                    duration_str = "00:00:00"
+                else:
+                    # For regular tracks, check all cameras for time data
+                    camera_ids = list(self.trackers.keys())
+                    for camera_id in camera_ids:
+                        if obj_id in self.trackers[camera_id].time_data:
+                            time_data = self.trackers[camera_id].time_data[obj_id]
+                            # Calculate current duration from intervals
+                            total_duration = time_data.get('total_active_time', 0)
+                            
+                            # Add duration of current active interval if exists
+                            intervals = time_data.get('active_intervals', [])
+                            if intervals and intervals[-1][1] is None:
+                                current_interval = current_time - intervals[-1][0]
+                                total_duration += current_interval
+                                
+                            duration_str = self._format_duration(total_duration)
+                            break
+                    else:
+                        duration_str = "00:00:00"
                 
-                # Color based on identification status
+                # Regular track color based on identification
                 if name == "UNK":
                     # Orange for unknown but detected faces
                     color = (0, 165, 255)  # Orange in BGR
+                    label = f"#{obj_id} ({duration_str})"
                 else:
                     # Green for known people
                     color = (0, 255, 0)  # Green in BGR
-                
-                # Display name/ID and time
-                if name == "UNK":
-                    label = f"Unknown #{obj_id}\n{time_str}"
-                else:
-                    label = f"{name}\n{time_str}"
+                    label = f"{name} ({duration_str})"
 
-            # Draw bounding box
-            cv2.rectangle(result, (x1, y1), (x2, y2), color, 2)
+            # Draw box with thickness proportional to box size
+            thickness = max(1, min(3, int((x2-x1) / 200 + 1)))
             
-            # Calculate center position for text
-            center_x = (x1 + x2) // 2
-            center_y = (y1 + y2) // 2
+            # Draw the bounding box
+            cv2.rectangle(result, (x1, y1), (x2, y2), color, thickness)
             
-            # Split text into lines
-            lines = label.split('\n')
+            # Calculate label position (above the box)
+            text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
+            cv2.rectangle(result, 
+                         (x1, y1 - text_size[1] - 10), 
+                         (x1 + text_size[0] + 10, y1), 
+                         color, -1)  # Filled background
             
-            # Get text sizes
-            font_scale = 0.7
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            line_heights = [cv2.getTextSize(line, font, font_scale, 2)[0][1] + 5 for line in lines]
-            total_height = sum(line_heights)
-            
-            # Draw each line centered
-            y = center_y - total_height//2
-            for i, line in enumerate(lines):
-                text_size = cv2.getTextSize(line, font, font_scale, 2)[0]
-                text_x = center_x - text_size[0]//2
-                
-                # Draw background rectangle
-                bg_pad = 5
-                cv2.rectangle(result, 
-                             (text_x - bg_pad, int(y - bg_pad)), 
-                             (text_x + text_size[0] + bg_pad, int(y + text_size[1] + bg_pad)), 
-                             color, cv2.FILLED)
-                
-                # Draw text
-                cv2.putText(result, line, (text_x, int(y + text_size[1])), 
-                           font, font_scale, (0, 0, 0), 2, cv2.LINE_AA)
-                
-                y += line_heights[i]
+            # Draw text with black color for better contrast
+            cv2.putText(result, label, (x1 + 5, y1 - 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
         
         return result
     
@@ -1581,6 +1770,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Fatal error in main execution: {e}")
         import traceback
-        traceback.print_e
-                                        
-                                                                                                                                                                                                                                                                                            
+        traceback.print_exc()
