@@ -11,6 +11,8 @@ import csv
 import queue
 from collections import deque
 from scipy.spatial.distance import cosine # For feature comparison
+import os
+import json
 
 # Check if CUDA is available
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -44,19 +46,125 @@ class PersonTracker:
         self.tracked_objects = {}  # Active/inactive tracks
         self.face_database = {}  # Permanent storage: {id: {'feature': feature_vector, 'last_seen': timestamp}}
         self.disappear_threshold = 2.0
-        # Don't remove tracks after reid_time_window - keep them forever in face_database
         self.reid_time_window = 1000.0  # Very long to effectively keep all tracks for re-id
-        self.iou_threshold = 0.3
-        self.feature_threshold = 0.4
+        # self.iou_threshold = 0.3
+        self.feature_threshold = 0.9  # Base threshold for new identifications
+        self.reidentification_threshold = 0.9  # More lenient threshold for recent tracks
         self.face_model_name = "Facenet"
         self.face_detector_backend = "mtcnn"
+        
+        # Known people database
+        self.known_people_dir = "known_people"
+        self.known_people = {}  # {name: {'features': [feature_vectors], 'images': [image_paths]}}
+        # New: Track mapping for known people
+        self.known_people_tracks = {}  # {name: [track_ids]}
+        self.load_known_people()
         
         # Add total_active_time to separate from elapsed time
         self.time_data = {}  # {id: {'first_seen': timestamp, 'last_seen': timestamp, 
                             #       'total_active_time': seconds, 'active_intervals': [(start, end), ...]}
         
+        # New structure to temporarily track unidentified people (no face detected yet)
+        self.unidentified_tracks = {}  # {temp_id: {'bbox': bbox, 'first_seen': timestamp, 'last_seen': timestamp}}
+        self.temp_id_counter = 1  # Counter for temporary IDs
+        
+        # New: Add feature history for more stable identification
+        self.feature_history = {}  # {id: [list of recent features]}
+        self.max_feature_history = 5  # Keep last 5 features for each ID
+        
         if DeepFace is None:
              print("WARNING: DeepFace library not available. Face re-identification will be disabled.")
+
+    def load_known_people(self):
+        """Load known people dataset from directory structure."""
+        if not os.path.exists(self.known_people_dir):
+            os.makedirs(self.known_people_dir)
+            print(f"Created known people directory: {self.known_people_dir}")
+            return
+
+        print("Loading known people dataset...")
+        for person_name in os.listdir(self.known_people_dir):
+            person_dir = os.path.join(self.known_people_dir, person_name)
+            if not os.path.isdir(person_dir):
+                continue
+
+            features = []
+            image_paths = []
+            
+            # Process each image in person's directory
+            for img_file in os.listdir(person_dir):
+                if not img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    continue
+                
+                img_path = os.path.join(person_dir, img_file)
+                try:
+                    # Extract face feature from the image
+                    img = cv2.imread(img_path)
+                    if img is None:
+                        print(f"Warning: Could not read image {img_path}")
+                        continue
+                        
+                    feature = self._extract_face_feature(img, [0, 0, img.shape[1], img.shape[0]])
+                    if feature is not None:
+                        features.append(feature)
+                        image_paths.append(img_path)
+                    else:
+                        print(f"Warning: Could not extract face feature from {img_path}")
+                except Exception as e:
+                    print(f"Error processing {img_path}: {e}")
+                    continue
+
+            if features:
+                self.known_people[person_name] = {
+                    'features': features,
+                    'images': image_paths
+                }
+                print(f"Loaded {len(features)} features for {person_name}")
+            else:
+                print(f"Warning: No valid features extracted for {person_name}")
+
+    def add_person_images(self, name, image_paths):
+        """Add new images for a person to the dataset."""
+        person_dir = os.path.join(self.known_people_dir, name)
+        if not os.path.exists(person_dir):
+            os.makedirs(person_dir)
+        
+        features = []
+        saved_paths = []
+        
+        for img_path in image_paths:
+            try:
+                # Read and process the image
+                img = cv2.imread(img_path)
+                if img is None:
+                    print(f"Warning: Could not read image {img_path}")
+                    continue
+                
+                # Extract face feature
+                feature = self._extract_face_feature(img, [0, 0, img.shape[1], img.shape[0]])
+                if feature is not None:
+                    # Copy image to person's directory
+                    new_path = os.path.join(person_dir, os.path.basename(img_path))
+                    cv2.imwrite(new_path, img)
+                    
+                    features.append(feature)
+                    saved_paths.append(new_path)
+                else:
+                    print(f"Warning: Could not extract face feature from {img_path}")
+            except Exception as e:
+                print(f"Error processing {img_path}: {e}")
+                continue
+        
+        # Update known people database
+        if features:
+            if name not in self.known_people:
+                self.known_people[name] = {'features': [], 'images': []}
+            
+            self.known_people[name]['features'].extend(features)
+            self.known_people[name]['images'].extend(saved_paths)
+            print(f"Added {len(features)} new features for {name}")
+        
+        return len(features)
 
     # +++ Helper: Extract Face Feature +++
     def _extract_face_feature(self, frame, bbox):
@@ -119,281 +227,283 @@ class PersonTracker:
              print(f"Error calculating feature distance: {e}")
              return 1.0 # Return max distance on error
 
+    def _update_feature_history(self, track_id, new_feature):
+        """Update feature history for a track and compute average feature"""
+        if track_id not in self.feature_history:
+            self.feature_history[track_id] = []
+        
+        # Add new feature to history
+        self.feature_history[track_id].append(new_feature)
+        
+        # Keep only recent features
+        if len(self.feature_history[track_id]) > self.max_feature_history:
+            self.feature_history[track_id].pop(0)
+        
+        # Compute average feature
+        avg_feature = np.mean(self.feature_history[track_id], axis=0)
+        return avg_feature
+
+    def _find_best_face_match(self, face_feature, current_time):
+        """Find the best matching face in the database with improved matching logic"""
+        best_match_id = -1
+        min_distance = float('inf')
+        best_name = "UNK"  # Default to unknown
+        
+        # First, try to match with known people
+        for name, data in self.known_people.items():
+            for ref_feature in data['features']:
+                distance = self._calculate_feature_distance(face_feature, ref_feature)
+                if distance < self.feature_threshold and distance < min_distance:
+                    min_distance = distance
+                    best_name = name
+                    # Look for existing track with this name to maintain duration
+                    for track_id, track_data in self.tracked_objects.items():
+                        if track_data.get('name') == name and track_data.get('active', False):
+                            best_match_id = track_id
+                            break
+        
+        # If no match in known people, try active tracks for re-identification
+        if best_name == "UNK":
+            for db_id, db_entry in self.face_database.items():
+                if 'feature' not in db_entry or db_entry['feature'] is None:
+                    continue
+                
+                # Calculate time since last seen
+                time_since_last_seen = current_time - db_entry['last_seen']
+                
+                # Use different thresholds based on recency
+                threshold = self.reidentification_threshold if time_since_last_seen < 5.0 else self.feature_threshold
+                
+                # Compare with average feature if available
+                if db_id in self.feature_history:
+                    avg_feature = np.mean(self.feature_history[db_id], axis=0)
+                    distance = self._calculate_feature_distance(face_feature, avg_feature)
+                else:
+                    distance = self._calculate_feature_distance(face_feature, db_entry['feature'])
+                
+                if distance < threshold and distance < min_distance:
+                    min_distance = distance
+                    best_match_id = db_id
+        
+        return best_match_id, best_name, min_distance
+
     def update(self, frame, detections, current_time=None):
-        """Update tracks using IoU and Face Features."""
+        """Update tracks using Face Features only with improved stability."""
         if current_time is None:
             current_time = time.time()
-            
+        
         active_objects = {}
-        inactive_objects_for_reid = {}
+        matched_track_ids = set()
+        matched_temp_ids = set()
         newly_detected_indices = set(range(len(detections)))
-        matched_track_ids = set() # Tracks matched in this frame (IoU or Feature)
-
-        # 1. Separate active and potentially re-identifiable inactive objects
-        for obj_id, obj_data in self.tracked_objects.items():
-            if obj_data.get('active', True):
-                active_objects[obj_id] = obj_data
-            elif current_time - obj_data['last_seen'] < self.reid_time_window:
-                # Keep inactive objects for potential re-id
-                inactive_objects_for_reid[obj_id] = obj_data
-
-        # 2. Match detections to ACTIVE objects using IoU
-        if active_objects and newly_detected_indices:
-            active_track_ids = list(active_objects.keys())
-            active_bboxes = [active_objects[tid]['bbox'] for tid in active_track_ids]
-            detection_indices_list = list(newly_detected_indices)
-            detection_bboxes = [detections[i]['bbox'] for i in detection_indices_list]
-
-            if not detection_bboxes: # Skip if no detections left
-                 pass
-            else:
-                iou_matrix = np.zeros((len(active_bboxes), len(detection_bboxes)))
-                for i, track_bbox in enumerate(active_bboxes):
-                    for j, det_bbox in enumerate(detection_bboxes):
-                        iou_matrix[i, j] = self._calculate_iou(track_bbox, det_bbox)
-
-                while iou_matrix.size > 0 and iou_matrix.max() > self.iou_threshold:
-                    track_idx, det_list_idx = np.unravel_index(iou_matrix.argmax(), iou_matrix.shape)
-                    det_original_idx = detection_indices_list[det_list_idx]
-                    track_id = active_track_ids[track_idx]
-
-                    # IoU Match found for active track
-                    bbox = detections[det_original_idx]['bbox']
-                    self.tracked_objects[track_id]['bbox'] = bbox
-                    self.tracked_objects[track_id]['last_seen'] = current_time
-                    self.tracked_objects[track_id]['active'] = True # Ensure stays active
-                    matched_track_ids.add(track_id)
-                    newly_detected_indices.remove(det_original_idx) # Remove from pool of unmatched detections
-
-                    # Update feature (optional, could be done less frequently)
-                    # If feature is missing or very old, try updating
-                    if self.tracked_objects[track_id].get('feature') is None:
-                         new_feature = self._extract_face_feature(frame, bbox)
-                         if new_feature is not None:
-                             self.tracked_objects[track_id]['feature'] = new_feature
-
-                    # Remove matched track and detection from further IoU matching this round
-                    iou_matrix = np.delete(iou_matrix, track_idx, axis=0)
-                    iou_matrix = np.delete(iou_matrix, det_list_idx, axis=1)
-                    active_track_ids.pop(track_idx)
-                    detection_indices_list.pop(det_list_idx)
-
-                    if not detection_indices_list: break # No more detections left to match
-
-        # 3. Match remaining detections to INACTIVE objects using IoU (for quick recovery)
-        if inactive_objects_for_reid and newly_detected_indices:
-            inactive_track_ids = list(inactive_objects_for_reid.keys())
-            inactive_bboxes = [inactive_objects_for_reid[tid]['bbox'] for tid in inactive_track_ids]
-            detection_indices_list = list(newly_detected_indices)
-            detection_bboxes = [detections[i]['bbox'] for i in detection_indices_list]
-
-            if not detection_bboxes:
-                 pass
-            else:
-                iou_matrix = np.zeros((len(inactive_bboxes), len(detection_bboxes)))
-                for i, track_bbox in enumerate(inactive_bboxes):
-                    for j, det_bbox in enumerate(detection_bboxes):
-                        iou_matrix[i, j] = self._calculate_iou(track_bbox, det_bbox)
-
-                while iou_matrix.size > 0 and iou_matrix.max() > self.iou_threshold:
-                    track_idx, det_list_idx = np.unravel_index(iou_matrix.argmax(), iou_matrix.shape)
-                    det_original_idx = detection_indices_list[det_list_idx]
-                    track_id = inactive_track_ids[track_idx]
-
-                    # IoU Match found for inactive track - Reactivate
-                    print(f"Re-identified Person {track_id} by IoU")
-                    bbox = detections[det_original_idx]['bbox']
-                    self.tracked_objects[track_id]['bbox'] = bbox
-                    self.tracked_objects[track_id]['last_seen'] = current_time
-                    self.tracked_objects[track_id]['active'] = True # Reactivated!
-                    matched_track_ids.add(track_id)
-                    newly_detected_indices.remove(det_original_idx)
-
-                    # Update feature if missing or on reactivation
-                    if self.tracked_objects[track_id].get('feature') is None:
-                         new_feature = self._extract_face_feature(frame, bbox)
-                         if new_feature is not None:
-                             self.tracked_objects[track_id]['feature'] = new_feature
-
-                    # Remove matched track and detection
-                    iou_matrix = np.delete(iou_matrix, track_idx, axis=0)
-                    iou_matrix = np.delete(iou_matrix, det_list_idx, axis=1)
-                    inactive_track_ids.pop(track_idx)
-                    detection_indices_list.pop(det_list_idx)
-
-                    if not detection_indices_list: break
-
-        # 4. Try FEATURE-BASED Re-identification against ALL historical tracks, not just recent inactive ones
-        detections_for_feature_check = list(newly_detected_indices)
-        unmatched_detection_indices_final = set(newly_detected_indices)
-
-        if DeepFace is not None and detections_for_feature_check:
-            # Use ALL face database entries, not just inactive_objects_for_reid
-            face_database_entries = {tid: data for tid, data in self.face_database.items() 
-                                    if 'feature' in data and data['feature'] is not None}
-
-            if face_database_entries:
-                feature_matched_detections = set() # Indices of detections matched by feature
-
-                for det_idx in detections_for_feature_check:
-                    if det_idx in feature_matched_detections: continue # Already matched
-
+        
+        # --- STEP 1: First try to match active permanent tracks by face ---
+        active_permanent_tracks = {id: data for id, data in self.tracked_objects.items() 
+                                 if data.get('active', True) and not isinstance(id, str)}
+        
+        if active_permanent_tracks and newly_detected_indices:
+            for track_id, track_data in active_permanent_tracks.items():
+                if not track_data.get('active', True):
+                    continue
+                
+                # Try to find the best matching detection for this track
+                best_det_idx = -1
+                best_distance = float('inf')
+                
+                for det_idx in newly_detected_indices:
                     bbox = detections[det_idx]['bbox']
-                    det_feature = self._extract_face_feature(frame, bbox)
-
-                    if det_feature is None:
-                        continue # Cannot perform feature matching without a feature
-
-                    best_match_id = -1
-                    min_distance = self.feature_threshold # Use threshold as upper bound
-
-                    # Compare det_feature with all available face database features
-                    # Make a copy of keys to iterate over, as we might modify the dict
-                    track_ids_to_check = list(face_database_entries.keys())
-                    for track_id in track_ids_to_check:
-                         # Check if track_id still available (might have been matched to another detection)
-                         if track_id not in face_database_entries: continue
-
-                         track_feature = face_database_entries[track_id]['feature']
-                         distance = self._calculate_feature_distance(det_feature, track_feature)
-
-                         if distance < min_distance:
-                             min_distance = distance
-                             best_match_id = track_id
-
-                    # If a best match below threshold was found
-                    if best_match_id != -1:
-                         print(f"Re-identified Person {best_match_id} by FEATURE (Dist: {min_distance:.3f})")
-                         
-                         # Check if this person is already in tracked_objects
-                         if best_match_id in self.tracked_objects:
-                             # Reactivate existing track
-                             self.tracked_objects[best_match_id]['active'] = True
-                             self.tracked_objects[best_match_id]['bbox'] = bbox
-                             self.tracked_objects[best_match_id]['last_seen'] = current_time
-                         else:
-                             # Recreate track with preserved ID
-                             self.tracked_objects[best_match_id] = {
-                        'bbox': bbox,
-                                 'first_seen': current_time,  # Reset first seen to now
-                        'last_seen': current_time,
-                                 'active': True,
-                                 'feature': det_feature
-                    }
+                    face_feature = self._extract_face_feature(frame, bbox)
                     
-                             # Add to time_data if needed
-                             if best_match_id not in self.time_data:
-                                 self.time_data[best_match_id] = {
+                    if face_feature is not None and track_id in self.feature_history:
+                        # Compare with average feature
+                        avg_feature = np.mean(self.feature_history[track_id], axis=0)
+                        distance = self._calculate_feature_distance(face_feature, avg_feature)
+                        
+                        if distance < self.reidentification_threshold and distance < best_distance:
+                            best_distance = distance
+                            best_det_idx = det_idx
+                
+                if best_det_idx != -1:
+                    # Update track with new detection
+                    bbox = detections[best_det_idx]['bbox']
+                    face_feature = self._extract_face_feature(frame, bbox)
+                    
+                    self.tracked_objects[track_id]['bbox'] = bbox
+                    self.tracked_objects[track_id]['last_seen'] = current_time
+                    
+                    # Update feature history
+                    if face_feature is not None:
+                        avg_feature = self._update_feature_history(track_id, face_feature)
+                        self.face_database[track_id]['feature'] = avg_feature
+                        self.face_database[track_id]['last_seen'] = current_time
+                    
+                    # Ensure time tracking continues
+                    if track_id in self.time_data:
+                        self.time_data[track_id]['last_seen'] = current_time
+                        intervals = self.time_data[track_id]['active_intervals']
+                        if not intervals or intervals[-1][1] is not None:
+                            intervals.append([current_time, None])
+                    
+                    matched_track_ids.add(track_id)
+                    newly_detected_indices.remove(best_det_idx)
+        
+        # --- STEP 2: Process remaining detections ---
+        for det_idx in list(newly_detected_indices):
+            bbox = detections[det_idx]['bbox']
+            face_feature = self._extract_face_feature(frame, bbox)
+            
+            if face_feature is not None:
+                best_match_id, name, min_distance = self._find_best_face_match(face_feature, current_time)
+                
+                if best_match_id != -1:
+                    # Update existing track
+                    self.tracked_objects[best_match_id]['bbox'] = bbox
+                    self.tracked_objects[best_match_id]['last_seen'] = current_time
+                    self.tracked_objects[best_match_id]['active'] = True
+                    self.tracked_objects[best_match_id]['name'] = name
+                    
+                    # Update known people tracks mapping
+                    if name != "UNK" and name not in self.known_people_tracks:
+                        self.known_people_tracks[name] = []
+                    if name != "UNK" and best_match_id not in self.known_people_tracks[name]:
+                        self.known_people_tracks[name].append(best_match_id)
+                    
+                    # Update feature history and database
+                    avg_feature = self._update_feature_history(best_match_id, face_feature)
+                    self.face_database[best_match_id]['feature'] = avg_feature
+                    self.face_database[best_match_id]['last_seen'] = current_time
+                    
+                    # Ensure time tracking continues
+                    if best_match_id in self.time_data:
+                        self.time_data[best_match_id]['last_seen'] = current_time
+                        intervals = self.time_data[best_match_id]['active_intervals']
+                        if not intervals or intervals[-1][1] is not None:
+                            intervals.append([current_time, None])
+                    
+                    matched_track_ids.add(best_match_id)
+                else:
+                    # Create new track
+                    new_id = self.next_id
+                    self.next_id += 1
+                    
+                    self.tracked_objects[new_id] = {
+                        'bbox': bbox,
                         'first_seen': current_time,
                         'last_seen': current_time,
-                                     'total_active_time': 0,
-                                     'active_intervals': []  # Track active time periods
-                                 }
-                             # Add new active interval
-                             self.time_data[best_match_id]['active_intervals'].append([current_time, None])
-                             
-                         # Update database entry
-                         self.face_database[best_match_id]['feature'] = det_feature  # Update the feature
-                         self.face_database[best_match_id]['last_seen'] = current_time
-                         
-                         # Mark detection as matched by feature
-                         feature_matched_detections.add(det_idx)
-                         unmatched_detection_indices_final.remove(det_idx)
-
-                         # Remove the matched track from pool for this frame's feature matching round
-                         del face_database_entries[best_match_id]
-
-        # 5. Create NEW tracks for truly unmatched detections
-        for detection_idx in unmatched_detection_indices_final:
-            bbox = detections[detection_idx]['bbox']
-            new_feature = self._extract_face_feature(frame, bbox)
-
-            new_id = self.next_id
-            self.tracked_objects[new_id] = {
-                'bbox': bbox,
-                    'first_seen': current_time,
-                    'last_seen': current_time,
-                'active': True,
-                'feature': new_feature
-            }
-            
-            # Add to permanent face database if a feature was extracted
-            if new_feature is not None:
-                self.face_database[new_id] = {
-                    'feature': new_feature,
-                    'first_seen': current_time,
-                    'last_seen': current_time
-                }
-            
-            # Initialize time tracking with active intervals
-            self.time_data[new_id] = {
-                    'first_seen': current_time,
-                    'last_seen': current_time,
-                'total_active_time': 0,
-                'active_intervals': [[current_time, None]]  # Start new active interval
-                }
-                
-            matched_track_ids.add(new_id) # Add new ID to the set of 'currently present' tracks
-            self.next_id += 1
-            status = "with face feature" if new_feature is not None else "without face feature"
-            print(f"New Person {new_id} detected ({status})")
-
-        # 6. Update status of existing tracks that were NOT matched
-        # When a person goes inactive, end their current active interval
-        current_tracked_ids = set(self.tracked_objects.keys())
-        unmatched_track_ids = current_tracked_ids - matched_track_ids # IDs not seen this frame
-
-        for obj_id in unmatched_track_ids:
-            if self.tracked_objects[obj_id].get('active', True):
-                if current_time - self.tracked_objects[obj_id]['last_seen'] > self.disappear_threshold:
-                    self.tracked_objects[obj_id]['active'] = False
+                        'active': True,
+                        'name': name
+                    }
                     
-                    # Close the active interval and calculate duration
-                    if obj_id in self.time_data:
-                        intervals = self.time_data[obj_id]['active_intervals']
-                        if intervals and intervals[-1][1] is None:
-                            intervals[-1][1] = current_time  # Close the interval
-                            interval_duration = current_time - intervals[-1][0]
-                            self.time_data[obj_id]['total_active_time'] += interval_duration
-                            self.time_data[obj_id]['last_seen'] = current_time
+                    # Update known people tracks mapping for new track
+                    if name != "UNK":
+                        if name not in self.known_people_tracks:
+                            self.known_people_tracks[name] = []
+                        self.known_people_tracks[name].append(new_id)
+                        print(f"New track {new_id} created for known person {name} (Total tracks: {len(self.known_people_tracks[name])})")
+                    else:
+                        print(f"New track created for unknown person (ID: {new_id})")
                     
-                    print(f"Person {obj_id} marked inactive after {self.disappear_threshold:.1f} seconds")
-
-        # 7. Clean up very old inactive tracks from tracked_objects (but keep in face_database)
-        ids_to_remove = []
-        for obj_id, obj_data in list(self.tracked_objects.items()):
-             # Remove if inactive AND last seen time exceeds the re-id window
-             if not obj_data.get('active', False) and (current_time - obj_data['last_seen'] > self.reid_time_window):
-                 ids_to_remove.append(obj_id)
-                 # Finalize time data if needed (already done when marked inactive)
-                 print(f"Removing inactive Person {obj_id} from active tracking after {self.reid_time_window:.1f} seconds.")
-
-        for obj_id in ids_to_remove:
-            if obj_id in self.tracked_objects: # Check existence before deleting
-                 del self.tracked_objects[obj_id]
-            # Keep time_data entry for historical records.
-
-        # 8. Update time data for ACTIVE objects only
-        for obj_id, obj_data in self.tracked_objects.items():
-            if obj_data.get('active', True):
-                if obj_id in self.time_data:
-                    # Update last_seen for active objects
-                    self.time_data[obj_id]['last_seen'] = current_time
+                    # Initialize feature history and database
+                    self._update_feature_history(new_id, face_feature)
+                    self.face_database[new_id] = {
+                        'feature': face_feature,
+                        'first_seen': current_time,
+                        'last_seen': current_time
+                    }
                     
-                    # Make sure there's an open active interval
-                    intervals = self.time_data[obj_id]['active_intervals']
-                    if not intervals or intervals[-1][1] is not None:
-                        # Start a new active interval if needed
-                        intervals.append([current_time, None])
+                    # Initialize time tracking
+                    self.time_data[new_id] = {
+                        'first_seen': current_time,
+                        'last_seen': current_time,
+                        'total_active_time': 0,
+                        'active_intervals': [[current_time, None]]
+                    }
+                    
+                    matched_track_ids.add(new_id)
         
-        return self.tracked_objects
+        # --- Update status of existing tracks ---
+        for obj_id in list(self.tracked_objects.keys()):
+            if obj_id not in matched_track_ids:
+                if self.tracked_objects[obj_id].get('active', True):
+                    if current_time - self.tracked_objects[obj_id]['last_seen'] > self.disappear_threshold:
+                        self.tracked_objects[obj_id]['active'] = False
+                        
+                        # Close the active interval
+                        if obj_id in self.time_data:
+                            intervals = self.time_data[obj_id]['active_intervals']
+                            if intervals and intervals[-1][1] is None:
+                                intervals[-1][1] = current_time
+                                interval_duration = current_time - intervals[-1][0]
+                                self.time_data[obj_id]['total_active_time'] += interval_duration
+                                self.time_data[obj_id]['last_seen'] = current_time
+        
+        # Return combined tracks for visualization
+        combined_tracks = self.tracked_objects.copy()
+        for temp_id, temp_data in self.unidentified_tracks.items():
+            temp_track = temp_data.copy()
+            temp_track['is_temporary'] = True
+            temp_track['active'] = True
+            combined_tracks[temp_id] = temp_track
+        
+        return combined_tracks
     
     def get_time_data(self):
-        """Get time data for all tracked objects"""
+        """Get time data for all tracked objects with consolidated known people information"""
         current_time = time.time()
         result = []
         
+        # First, process known people's consolidated data
+        for name, track_ids in self.known_people_tracks.items():
+            total_active_time = 0
+            first_seen = float('inf')
+            last_seen = 0
+            active_status = False
+            track_intervals = []
+            
+            for track_id in track_ids:
+                if track_id in self.time_data:
+                    time_info = self.time_data[track_id]
+                    # Update overall first/last seen
+                    first_seen = min(first_seen, time_info['first_seen'])
+                    last_seen = max(last_seen, time_info['last_seen'])
+                    
+                    # Accumulate intervals
+                    for interval in time_info['active_intervals']:
+                        start = interval[0]
+                        end = interval[1] if interval[1] is not None else (
+                            current_time if track_id in self.tracked_objects and 
+                            self.tracked_objects[track_id].get('active', False) else start
+                        )
+                        track_intervals.append((start, end))
+                        total_active_time += end - start
+                    
+                    # Check if any track is currently active
+                    if track_id in self.tracked_objects and self.tracked_objects[track_id].get('active', False):
+                        active_status = True
+            
+            if first_seen != float('inf'):  # Only add if we have valid data
+                result.append({
+                    'name': name,
+                    'track_ids': track_ids,
+                    'first_seen': datetime.fromtimestamp(first_seen).strftime("%Y-%m-%d %H:%M:%S"),
+                    'last_seen': datetime.fromtimestamp(last_seen).strftime("%Y-%m-%d %H:%M:%S"),
+                    'duration': self._format_duration(total_active_time),
+                    'duration_seconds': total_active_time,
+                    'status': 'Active' if active_status else 'Inactive',
+                    'is_known': True
+                })
+        
+        # Then process unknown tracks (not associated with known people)
         for obj_id, time_info in self.time_data.items():
+            # Skip if this track belongs to a known person
+            skip = False
+            for track_ids in self.known_people_tracks.values():
+                if obj_id in track_ids:
+                    skip = True
+                    break
+            if skip:
+                continue
+            
             # Calculate total active time from intervals
             total_active_time = 0
             for interval in time_info['active_intervals']:
@@ -413,7 +523,8 @@ class PersonTracker:
                 'last_seen': datetime.fromtimestamp(time_info['last_seen']).strftime("%Y-%m-%d %H:%M:%S"),
                 'duration': self._format_duration(total_active_time),
                 'duration_seconds': total_active_time,
-                'status': 'Active' if active else 'Inactive'
+                'status': 'Active' if active else 'Inactive',
+                'is_known': False
             })
         
         return result
@@ -1155,32 +1266,61 @@ class PeopleTrackingGUI:
 
             x1, y1, x2, y2 = map(int, obj_data['bbox'])
             
-            # Calculate active time from intervals instead of first_seen
-            active_time = 0
-            if obj_id in self.trackers[0].time_data:  # Assuming camera 0 for now
-                time_info = self.trackers[0].time_data[obj_id]
-                active_intervals = time_info.get('active_intervals', [])
+            # Check if this is a temporary track (awaiting face detection)
+            is_temporary = obj_data.get('is_temporary', False)
+            name = obj_data.get('name', 'UNK')
+            
+            if is_temporary:
+                # Yellow color for temporary tracks (waiting for face)
+                color = (0, 255, 255)  # Yellow in BGR
                 
-                for interval in active_intervals:
-                    start = interval[0]
-                    end = interval[1] if interval[1] is not None else current_time
-                    active_time += end - start
+                # For temporary tracks, calculate time since first seen
+                if 'first_seen' in obj_data:
+                    time_visible = current_time - obj_data['first_seen']
+                    time_str = self._format_duration(time_visible)
+                else:
+                    time_str = "00:00:00"
+                
+                # Display as temporary ID
+                label = f"Waiting for face\n{time_str}"
+            else:
+                # Regular track with permanent ID
+                # Calculate active time from intervals
+                active_time = 0
+                camera_id = list(self.trackers.keys())[0] if self.trackers else 0  # Default to first camera
+                
+                if obj_id in self.trackers[camera_id].time_data:
+                    time_info = self.trackers[camera_id].time_data[obj_id]
+                    active_intervals = time_info.get('active_intervals', [])
+                    
+                    for interval in active_intervals:
+                        start = interval[0]
+                        end = interval[1] if interval[1] is not None else current_time
+                        active_time += end - start
 
-            time_str = self._format_duration(active_time)
+                time_str = self._format_duration(active_time)
+                
+                # Color based on identification status
+                if name == "UNK":
+                    # Orange for unknown but detected faces
+                    color = (0, 165, 255)  # Orange in BGR
+                else:
+                    # Green for known people
+                    color = (0, 255, 0)  # Green in BGR
+                
+                # Display name/ID and time
+                if name == "UNK":
+                    label = f"Unknown #{obj_id}\n{time_str}"
+                else:
+                    label = f"{name}\n{time_str}"
 
-            # Draw bounding box (Green for active)
-            color = (0, 255, 0)
+            # Draw bounding box
             cv2.rectangle(result, (x1, y1), (x2, y2), color, 2)
             
             # Calculate center position for text
             center_x = (x1 + x2) // 2
             center_y = (y1 + y2) // 2
             
-            # Draw ID and time at center
-            label = f"ID: {obj_id}\n{time_str}"
-            if obj_data.get('feature') is not None:
-                label += " [F]"  # Indicate feature present
-
             # Split text into lines
             lines = label.split('\n')
             
@@ -1263,47 +1403,128 @@ class PeopleTrackingGUI:
 
     
     def extract_time_data(self):
-        """Extract time data for all tracked people"""
+        """Extract time data for all tracked people in a hierarchical structure"""
         try:
-            # Collect time data from all trackers
-            all_data = []
+            # Collect raw time data from all trackers
+            raw_data = {}  # {camera_id: tracker_data}
             for camera_id, tracker in self.trackers.items():
                 try:
                     camera_data = tracker.get_time_data()
-                    # Add camera ID to each entry
-                    for entry in camera_data:
-                        entry['camera_id'] = camera_id
-                    all_data.extend(camera_data)
+                    raw_data[camera_id] = camera_data
                 except Exception as e:
-                     self.log_message(f"Error getting time data from tracker for camera {camera_id}: {e}")
+                    self.log_message(f"Error getting time data from tracker for camera {camera_id}: {e}")
             
-            if not all_data:
+            if not raw_data:
                 messagebox.showinfo("Info", "No tracking data available to export.")
                 return
             
+            # Create hierarchical structure
+            structured_data = {
+                "known_people": {},
+                "unknown_people": []
+            }
+            
+            # Process all cameras' data
+            for camera_id, camera_data in raw_data.items():
+                # Process known people first
+                known_entries = [entry for entry in camera_data if entry.get('is_known', False)]
+                for entry in known_entries:
+                    name = entry['name']
+                    if name not in structured_data["known_people"]:
+                        structured_data["known_people"][name] = {
+                            "total_duration": entry['duration'],
+                            "total_duration_seconds": entry['duration_seconds'],
+                            "first_seen": entry['first_seen'],
+                            "last_seen": entry['last_seen'],
+                            "tracks": []
+                        }
+                    
+                    # Get track details for this person
+                    tracker = self.trackers[camera_id]
+                    for track_id in entry['track_ids']:
+                        if track_id in tracker.time_data:
+                            track_data = tracker.time_data[track_id]
+                            intervals = track_data['active_intervals']
+                            
+                            # Process each interval as a separate track entry
+                            for interval in intervals:
+                                start_time = datetime.fromtimestamp(interval[0]).strftime("%Y-%m-%d %H:%M:%S")
+                                # Handle ongoing tracks
+                                if interval[1] is None:
+                                    end_time = "ongoing"
+                                    duration_seconds = time.time() - interval[0]
+                                else:
+                                    end_time = datetime.fromtimestamp(interval[1]).strftime("%Y-%m-%d %H:%M:%S")
+                                    duration_seconds = interval[1] - interval[0]
+                                
+                                track_entry = {
+                                    "camera": camera_id,
+                                    "track_id": track_id,
+                                    "track_start": start_time,
+                                    "track_end": end_time,
+                                    "duration": self._format_duration(duration_seconds)
+                                }
+                                structured_data["known_people"][name]["tracks"].append(track_entry)
+                
+                # Process unknown people
+                unknown_entries = [entry for entry in camera_data if not entry.get('is_known', False)]
+                for entry in unknown_entries:
+                    track_id = entry['id']
+                    if track_id in tracker.time_data:
+                        track_data = tracker.time_data[track_id]
+                        intervals = track_data['active_intervals']
+                        
+                        for interval in intervals:
+                            start_time = datetime.fromtimestamp(interval[0]).strftime("%Y-%m-%d %H:%M:%S")
+                            if interval[1] is None:
+                                end_time = "ongoing"
+                                duration_seconds = time.time() - interval[0]
+                            else:
+                                end_time = datetime.fromtimestamp(interval[1]).strftime("%Y-%m-%d %H:%M:%S")
+                                duration_seconds = interval[1] - interval[0]
+                            
+                            unknown_entry = {
+                                "id": track_id,
+                                "camera": camera_id,
+                                "track_start": start_time,
+                                "track_end": end_time,
+                                "duration": self._format_duration(duration_seconds),
+                                "total_duration": entry['duration']
+                            }
+                            structured_data["unknown_people"].append(unknown_entry)
+            
             # Ask user for save location
             file_path = filedialog.asksaveasfilename(
-                defaultextension=".csv",
-                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
                 title="Save Tracking Time Data As"
             )
             
             if not file_path:
                 return  # User cancelled
             
-            # Write data to CSV
-            with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
-                # Ensure all potential keys are included
-                fieldnames = ['camera_id', 'id', 'first_seen', 'last_seen', 'duration', 'duration_seconds', 'status']
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore') # Ignore extra keys if any
-                
-                writer.writeheader()
-                # Sort data before writing? Maybe by camera then ID?
-                all_data.sort(key=lambda x: (x.get('camera_id', ''), x.get('id', 0)))
-                for entry in all_data:
-                    writer.writerow(entry)
+            # Write to JSON file
+            with open(file_path, 'w', encoding='utf-8') as jsonfile:
+                json.dump(structured_data, jsonfile, indent=4)
             
             self.log_message(f"Time data exported to {file_path}")
+            
+            # Display summary in log
+            self.log_message("\nTracking Summary:")
+            for name, person_data in structured_data["known_people"].items():
+                self.log_message(f"\nKnown Person: {name}")
+                self.log_message(f"  Total Duration: {person_data['total_duration']}")
+                self.log_message(f"  First Seen: {person_data['first_seen']}")
+                self.log_message(f"  Last Seen: {person_data['last_seen']}")
+                self.log_message("  Tracks:")
+                for track in person_data["tracks"]:
+                    self.log_message(f"    Camera {track['camera']}: {track['track_start']} -> {track['track_end']} ({track['duration']})")
+            
+            if structured_data["unknown_people"]:
+                self.log_message("\nUnknown Tracks:")
+                for track in structured_data["unknown_people"]:
+                    self.log_message(f"  ID {track['id']} (Camera {track['camera']}): {track['track_start']} -> {track['track_end']} ({track['duration']})")
+            
             messagebox.showinfo("Success", f"Time data successfully exported to\n{file_path}")
             
         except Exception as e:

@@ -1,0 +1,34 @@
+{
+    "known_people": {
+        "efe": {
+            "total_duration": "00:00:24",
+            "total_duration_seconds": 24.420609951019287,
+            "first_seen": "2025-04-10 13:19:00",
+            "last_seen": "2025-04-10 13:19:27",
+            "tracks": [
+                {
+                    "camera": 0,
+                    "track_id": 1,
+                    "track_start": "2025-04-10 13:19:00",
+                    "track_end": "2025-04-10 13:19:05",
+                    "duration": "00:00:05"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 2,
+                    "track_start": "2025-04-10 13:19:06",
+                    "track_end": "2025-04-10 13:19:16",
+                    "duration": "00:00:09"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 3,
+                    "track_start": "2025-04-10 13:19:17",
+                    "track_end": "2025-04-10 13:19:27",
+                    "duration": "00:00:09"
+                }
+            ]
+        }
+    },
+    "unknown_people": []
+}
