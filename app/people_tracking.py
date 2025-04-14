@@ -22,7 +22,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Load YOLOv8 model - using Ultralytics implementation
 try:
-    model = YOLO('models\\yolov8n.pt')  # Load the smallest YOLOv8 model to start with
+    model = YOLO('models/yolov8n.pt')  # Load the smallest YOLOv8 model to start with
 except ImportError:
     messagebox.showerror("Error", "Please install ultralytics: pip install ultralytics")
     model = None
@@ -31,8 +31,8 @@ except ImportError:
 try:
     # Initialize dlib's face detector and recognition model
     face_detector = dlib.get_frontal_face_detector()
-    shape_predictor = dlib.shape_predictor('models\\shape_predictor_68_face_landmarks.dat')
-    face_rec_model = dlib.face_recognition_model_v1('models\\dlib_face_recognition_resnet_model_v1.dat')
+    shape_predictor = dlib.shape_predictor('models/shape_predictor_68_face_landmarks.dat')
+    face_rec_model = dlib.face_recognition_model_v1('models/dlib_face_recognition_resnet_model_v1.dat')
     
     print("Models loaded successfully.")
 except Exception as e:
@@ -110,14 +110,15 @@ class PersonTracker:
                     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     
                     # Detect face locations using face_recognition (more reliable for stored images)
-                    face_locations = face_recognition.face_locations(rgb_frame)
-                    
-                    if not face_locations:
-                        print(f"No face found in {img_path}")
-                        continue
+                    # face_locations = face_recognition.face_locations(rgb_frame)
+                    #
+                    # if not face_locations:
+                    #     print(f"No face found in {img_path}")
+                    #     continue
                     
                     # Get face encoding using face_recognition
-                    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+                    # face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+                    face_encodings = face_recognition.face_encodings(rgb_frame)
                     
                     if face_encodings:
                         features.append(face_encodings[0])
@@ -214,7 +215,8 @@ class PersonTracker:
             face_location = (y1, x2, y2, x1)
             
             # Extract face encoding using face_recognition (more reliable)
-            face_encodings = face_recognition.face_encodings(rgb_frame, [face_location])
+            # face_encodings = face_recognition.face_encodings(rgb_frame, [face_location]) # for some reason giving face_locations makes recognition worse
+            face_encodings = face_recognition.face_encodings(rgb_frame)
             
             if not face_encodings:
                 return None
@@ -605,7 +607,6 @@ class PersonTracker:
         # Calculate IoU
         return intersection_area / union_area if union_area > 0 else 0
 
-
 class CameraManager:
     def __init__(self, camera_ids=None):
         self.cameras = {}  # {id: {'cap': VideoCapture, 'frame': frame, 'thread': thread, 'running': bool}}
@@ -803,7 +804,6 @@ class CameraManager:
                 time.sleep(0.01)  # Short sleep on error
         
         print(f"Camera {camera_id} capture thread stopped")
-
 
 class PeopleTrackingGUI:
     def __init__(self, window, window_title):
