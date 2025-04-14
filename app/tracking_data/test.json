@@ -1,0 +1,84 @@
+{
+    "known_people": {
+        "EfekaanEfe": {
+            "total_duration": "00:01:06",
+            "total_duration_seconds": 66.7711455821991,
+            "first_seen": "2025-04-10 16:36:31",
+            "last_seen": "2025-04-10 16:37:28",
+            "tracks": [
+                {
+                    "camera": 0,
+                    "track_id": 1,
+                    "track_start": "2025-04-10 16:36:31",
+                    "track_end": "2025-04-10 16:36:37",
+                    "duration": "00:00:05"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 3,
+                    "track_start": "2025-04-10 16:36:44",
+                    "track_end": "2025-04-10 16:36:59",
+                    "duration": "00:00:14"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 8,
+                    "track_start": "2025-04-10 16:37:27",
+                    "track_end": "ongoing",
+                    "duration": "00:00:46"
+                }
+            ]
+        },
+        "ErenTurkmen": {
+            "total_duration": "00:01:14",
+            "total_duration_seconds": 74.48380923271179,
+            "first_seen": "2025-04-10 16:36:43",
+            "last_seen": "2025-04-10 16:37:28",
+            "tracks": [
+                {
+                    "camera": 0,
+                    "track_id": 2,
+                    "track_start": "2025-04-10 16:36:43",
+                    "track_end": "2025-04-10 16:36:46",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 4,
+                    "track_start": "2025-04-10 16:36:56",
+                    "track_end": "2025-04-10 16:36:59",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 5,
+                    "track_start": "2025-04-10 16:37:00",
+                    "track_end": "2025-04-10 16:37:15",
+                    "duration": "00:00:15"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 6,
+                    "track_start": "2025-04-10 16:37:17",
+                    "track_end": "2025-04-10 16:37:21",
+                    "duration": "00:00:03"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 7,
+                    "track_start": "2025-04-10 16:37:23",
+                    "track_end": "2025-04-10 16:37:26",
+                    "duration": "00:00:03"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 8,
+                    "track_start": "2025-04-10 16:37:27",
+                    "track_end": "ongoing",
+                    "duration": "00:00:46"
+                }
+            ]
+        }
+    },
+    "unknown_people": []
+}

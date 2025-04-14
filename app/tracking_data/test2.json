@@ -1,0 +1,140 @@
+{
+    "known_people": {
+        "ErenTurkmen": {
+            "total_duration": "00:00:06",
+            "total_duration_seconds": 6.331566572189331,
+            "first_seen": "2025-04-10 22:35:11",
+            "last_seen": "2025-04-10 22:35:26",
+            "tracks": [
+                {
+                    "camera": 0,
+                    "track_id": 1,
+                    "track_start": "2025-04-10 22:35:11",
+                    "track_end": "2025-04-10 22:35:13",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 6,
+                    "track_start": "2025-04-10 22:35:21",
+                    "track_end": "2025-04-10 22:35:23",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 8,
+                    "track_start": "2025-04-10 22:35:23",
+                    "track_end": "2025-04-10 22:35:26",
+                    "duration": "00:00:02"
+                }
+            ]
+        },
+        "EfekaanEfe": {
+            "total_duration": "00:00:33",
+            "total_duration_seconds": 33.920390367507935,
+            "first_seen": "2025-04-10 22:35:12",
+            "last_seen": "2025-04-10 22:35:37",
+            "tracks": [
+                {
+                    "camera": 0,
+                    "track_id": 2,
+                    "track_start": "2025-04-10 22:35:12",
+                    "track_end": "2025-04-10 22:35:14",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 3,
+                    "track_start": "2025-04-10 22:35:16",
+                    "track_end": "2025-04-10 22:35:18",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 4,
+                    "track_start": "2025-04-10 22:35:18",
+                    "track_end": "2025-04-10 22:35:20",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 5,
+                    "track_start": "2025-04-10 22:35:19",
+                    "track_end": "2025-04-10 22:35:22",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 7,
+                    "track_start": "2025-04-10 22:35:22",
+                    "track_end": "2025-04-10 22:35:24",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 9,
+                    "track_start": "2025-04-10 22:35:25",
+                    "track_end": "2025-04-10 22:35:27",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 10,
+                    "track_start": "2025-04-10 22:35:26",
+                    "track_end": "2025-04-10 22:35:28",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 11,
+                    "track_start": "2025-04-10 22:35:30",
+                    "track_end": "2025-04-10 22:35:32",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 12,
+                    "track_start": "2025-04-10 22:35:31",
+                    "track_end": "2025-04-10 22:35:33",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 13,
+                    "track_start": "2025-04-10 22:35:32",
+                    "track_end": "2025-04-10 22:35:34",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 14,
+                    "track_start": "2025-04-10 22:35:32",
+                    "track_end": "2025-04-10 22:35:34",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 15,
+                    "track_start": "2025-04-10 22:35:35",
+                    "track_end": "2025-04-10 22:35:37",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 16,
+                    "track_start": "2025-04-10 22:35:36",
+                    "track_end": "ongoing",
+                    "duration": "00:00:04"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 17,
+                    "track_start": "2025-04-10 22:35:37",
+                    "track_end": "ongoing",
+                    "duration": "00:00:03"
+                }
+            ]
+        }
+    },
+    "unknown_people": []
+}
