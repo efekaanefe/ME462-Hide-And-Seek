@@ -28,17 +28,6 @@ except ImportError:
     messagebox.showerror("Error", "Please install ultralytics: pip install ultralytics")
     model = None
 
-# Initialize face detector and recognition models
-try:
-    # Initialize dlib's face detector and recognition model
-    face_detector = dlib.get_frontal_face_detector()
-    shape_predictor = dlib.shape_predictor('models/shape_predictor_68_face_landmarks.dat')
-    face_rec_model = dlib.face_recognition_model_v1('models/dlib_face_recognition_resnet_model_v1.dat')
-    
-    print("Models loaded successfully.")
-except Exception as e:
-    print(f"Error loading models: {e}")
-    model = None
 
 class PersonTracker:
     def __init__(self):
