@@ -1,0 +1,230 @@
+{
+    "known_people": {
+        "EfekaanEfe": {
+            "total_duration": "00:01:39",
+            "total_duration_seconds": 99.6892261505127,
+            "first_seen": "2025-04-16 11:20:45",
+            "last_seen": "2025-04-16 11:22:53",
+            "tracks": [
+                {
+                    "camera": 0,
+                    "track_id": 1,
+                    "track_start": "2025-04-16 11:20:45",
+                    "track_end": "2025-04-16 11:21:12",
+                    "duration": "00:00:26"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 2,
+                    "track_start": "2025-04-16 11:21:13",
+                    "track_end": "2025-04-16 11:21:38",
+                    "duration": "00:00:25"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 3,
+                    "track_start": "2025-04-16 11:21:45",
+                    "track_end": "2025-04-16 11:21:52",
+                    "duration": "00:00:06"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 4,
+                    "track_start": "2025-04-16 11:21:55",
+                    "track_end": "2025-04-16 11:22:03",
+                    "duration": "00:00:07"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 5,
+                    "track_start": "2025-04-16 11:22:11",
+                    "track_end": "2025-04-16 11:22:21",
+                    "duration": "00:00:10"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 5,
+                    "track_start": "2025-04-16 11:22:28",
+                    "track_end": "2025-04-16 11:22:31",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 6,
+                    "track_start": "2025-04-16 11:22:24",
+                    "track_end": "2025-04-16 11:22:28",
+                    "duration": "00:00:03"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 7,
+                    "track_start": "2025-04-16 11:22:34",
+                    "track_end": "2025-04-16 11:22:37",
+                    "duration": "00:00:02"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 8,
+                    "track_start": "2025-04-16 11:22:38",
+                    "track_end": "2025-04-16 11:22:46",
+                    "duration": "00:00:08"
+                },
+                {
+                    "camera": 0,
+                    "track_id": 9,
+                    "track_start": "2025-04-16 11:22:47",
+                    "track_end": "ongoing",
+                    "duration": "00:00:05"
+                }
+            ]
+        }
+    },
+    "unknown_people": [],
+    "identity_changes": {},
+    "reid_events": {
+        "1": [
+            {
+                "time": "2025-04-16 11:20:47",
+                "result": "no_face",
+                "camera": 0
+            },
+            {
+                "time": "2025-04-16 11:20:52",
+                "result": "identity_confirmed",
+                "match_id": 1,
+                "match_name": "EfekaanEfe",
+                "distance": 0.35160896137917597,
+                "camera": 0
+            },
+            {
+                "time": "2025-04-16 11:20:57",
+                "result": "identity_confirmed",
+                "match_id": 1,
+                "match_name": "EfekaanEfe",
+                "distance": 0.38288563653524177,
+                "camera": 0
+            },
+            {
+                "time": "2025-04-16 11:21:02",
+                "result": "identity_confirmed",
+                "match_id": 1,
+                "match_name": "EfekaanEfe",
+                "distance": 0.36522121747819314,
+                "camera": 0
+            },
+            {
+                "time": "2025-04-16 11:21:07",
+                "result": "identity_confirmed",
+                "match_id": 1,
+                "match_name": "EfekaanEfe",
+                "distance": 0.31453687866560287,
+                "camera": 0
+            }
+        ],
+        "2": [
+            {
+                "time": "2025-04-16 11:21:15",
+                "result": "identity_confirmed",
+                "match_id": 2,
+                "match_name": "EfekaanEfe",
+                "distance": 0.43136583601412576,
+                "camera": 0
+            },
+            {
+                "time": "2025-04-16 11:21:20",
+                "result": "identity_confirmed",
+                "match_id": 2,
+                "match_name": "EfekaanEfe",
+                "distance": 0.39996952428543653,
+                "camera": 0
+            },
+            {
+                "time": "2025-04-16 11:21:25",
+                "result": "identity_confirmed",
+                "match_id": 2,
+                "match_name": "EfekaanEfe",
+                "distance": 0.4450732655100651,
+                "camera": 0
+            },
+            {
+                "time": "2025-04-16 11:21:30",
+                "result": "identity_confirmed",
+                "match_id": 2,
+                "match_name": "EfekaanEfe",
+                "distance": 0.4178753916889591,
+                "camera": 0
+            },
+            {
+                "time": "2025-04-16 11:21:35",
+                "result": "identity_confirmed",
+                "match_id": 2,
+                "match_name": "EfekaanEfe",
+                "distance": 0.4211843413043317,
+                "camera": 0
+            }
+        ],
+        "3": [
+            {
+                "time": "2025-04-16 11:21:47",
+                "result": "identity_confirmed",
+                "match_id": 3,
+                "match_name": "EfekaanEfe",
+                "distance": 0.45650465025602205,
+                "camera": 0
+            }
+        ],
+        "4": [
+            {
+                "time": "2025-04-16 11:21:57",
+                "result": "identity_confirmed",
+                "match_id": 4,
+                "match_name": "EfekaanEfe",
+                "distance": 0.45899200832675335,
+                "camera": 0
+            }
+        ],
+        "5": [
+            {
+                "time": "2025-04-16 11:22:12",
+                "result": "identity_confirmed",
+                "match_id": 5,
+                "match_name": "EfekaanEfe",
+                "distance": 0.4491770043452982,
+                "camera": 0
+            },
+            {
+                "time": "2025-04-16 11:22:17",
+                "result": "identity_confirmed",
+                "match_id": 5,
+                "match_name": "EfekaanEfe",
+                "distance": 0.47564114647067224,
+                "camera": 0
+            },
+            {
+                "time": "2025-04-16 11:22:29",
+                "result": "no_face",
+                "camera": 0
+            }
+        ],
+        "8": [
+            {
+                "time": "2025-04-16 11:22:40",
+                "result": "identity_confirmed",
+                "match_id": 8,
+                "match_name": "EfekaanEfe",
+                "distance": 0.409241790902473,
+                "camera": 0
+            }
+        ],
+        "9": [
+            {
+                "time": "2025-04-16 11:22:49",
+                "result": "identity_confirmed",
+                "match_id": 9,
+                "match_name": "EfekaanEfe",
+                "distance": 0.37952801807931996,
+                "camera": 0
+            }
+        ]
+    }
+}

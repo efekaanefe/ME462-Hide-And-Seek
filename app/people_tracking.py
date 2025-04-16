@@ -48,9 +48,21 @@ class PersonTracker:
         self.disappear_threshold = 2.0
         self.reid_time_window = 1000.0  # Very long to effectively keep all tracks for re-id
         self.iou_threshold = 0.3  # Minimum IoU for matching consideration
-        self.feature_threshold = 0.8  # More lenient threshold for known people
+        self.feature_threshold = 0.6  # More lenient threshold for known people
         self.reidentification_threshold = 0.8
         self.face_detector_backend = "mtcnn"
+        
+        # Periodic re-identification settings
+        self.periodic_reid_enabled = True  # Enable periodic re-identification
+        self.periodic_reid_interval = 5.0  # Seconds between re-identification checks
+        self.last_reid_checks = {}  # Track last re-identification time for each track
+        self.identity_confidence_scores = {}  # Store confidence scores for each track's identity
+        self.reid_failure_threshold = 3  # Number of failed re-IDs before considering identity switch
+        self.reid_failure_counts = {}  # Count re-ID failures for each track
+        
+        # Track identity changes history
+        self.identity_changes = {}  # {track_id: [{'time': timestamp, 'from': old_name, 'to': new_name}]}
+        self.reid_events = {}  # {track_id: [{'time': timestamp, 'result': success/failure}]}
         
         # Known people database
         self.known_people_dir = "known_people"
@@ -464,6 +476,177 @@ class PersonTracker:
         
         return matches, unmatched_tracks, unmatched_detections
 
+    def _should_perform_reid(self, track_id, current_time):
+        """Check if it's time to re-identify a track"""
+        if not self.periodic_reid_enabled:
+            return False
+            
+        # Skip for temporary tracks
+        if isinstance(track_id, str):
+            return False
+            
+        # Initialize last check time if not present
+        if track_id not in self.last_reid_checks:
+            self.last_reid_checks[track_id] = current_time - self.periodic_reid_interval + 1  # Check soon after creation
+            return False
+            
+        # Check if enough time has passed since last check
+        time_since_last_check = current_time - self.last_reid_checks[track_id]
+        return time_since_last_check >= self.periodic_reid_interval
+
+    def _handle_reid_result(self, track_id, face_feature, current_time):
+        """Handle periodic re-identification result"""
+        # Update last check time
+        self.last_reid_checks[track_id] = current_time
+        
+        # Record the re-ID event
+        if track_id not in self.reid_events:
+            self.reid_events[track_id] = []
+        
+        # Add basic event record (will update with result)
+        reid_event = {'time': current_time, 'result': 'no_face'}
+        
+        # Skip if face feature couldn't be extracted
+        if face_feature is None:
+            self.reid_events[track_id].append(reid_event)
+            return False
+            
+        # Update event as face was extracted
+        reid_event['result'] = 'face_extracted'
+        
+        # Get current track data
+        if track_id not in self.tracked_objects:
+            self.reid_events[track_id].append(reid_event)
+            return False
+            
+        track_data = self.tracked_objects[track_id]
+        current_name = track_data.get('name', 'UNK')
+        
+        # Find best match for this face feature
+        best_match_id, best_match_name, min_distance = self._find_best_face_match(face_feature, current_time)
+        
+        # Update re-ID event with match information
+        reid_event['match_id'] = best_match_id
+        reid_event['match_name'] = best_match_name
+        reid_event['distance'] = min_distance
+        
+        # If we didn't find any match, just update feature history
+        if best_match_id == -1 and best_match_name == "UNK":
+            self._update_feature_history(track_id, face_feature)
+            
+            # Initialize failure count if needed
+            if track_id not in self.reid_failure_counts:
+                self.reid_failure_counts[track_id] = 0
+                
+            reid_event['result'] = 'no_match'
+            self.reid_events[track_id].append(reid_event)
+            return False
+        
+        # Check if the identified person matches current track
+        identity_changed = False
+        
+        # Case 1: Known person, update to a known ID
+        if best_match_name != "UNK" and current_name == "UNK":
+            # We now know this person's identity
+            print(f"Re-ID found identity for track {track_id}: {best_match_name}")
+            
+            # Record identity change
+            if track_id not in self.identity_changes:
+                self.identity_changes[track_id] = []
+            
+            self.identity_changes[track_id].append({
+                'time': current_time,
+                'from': current_name,
+                'to': best_match_name,
+                'reason': 'identified_unknown',
+                'confidence': 1.0 - min_distance
+            })
+            
+            # Update track data
+            self.tracked_objects[track_id]['name'] = best_match_name
+            identity_changed = True
+            
+            # Update known people tracks mapping
+            if best_match_name not in self.known_people_tracks:
+                self.known_people_tracks[best_match_name] = []
+            if track_id not in self.known_people_tracks[best_match_name]:
+                self.known_people_tracks[best_match_name].append(track_id)
+            
+            # Reset failure count
+            self.reid_failure_counts[track_id] = 0
+            
+            # Update re-ID event
+            reid_event['result'] = 'identified_unknown'
+        
+        # Case 2: Known person, different identity than we thought
+        elif best_match_name != "UNK" and current_name != "UNK" and best_match_name != current_name:
+            # Potential identity switch detected - increment failure count
+            if track_id not in self.reid_failure_counts:
+                self.reid_failure_counts[track_id] = 0
+            
+            self.reid_failure_counts[track_id] += 1
+            
+            # Update re-ID event with identity conflict
+            reid_event['result'] = 'identity_conflict'
+            reid_event['current_name'] = current_name
+            reid_event['failure_count'] = self.reid_failure_counts[track_id]
+            
+            # Check if we've exceeded failure threshold
+            if self.reid_failure_counts[track_id] >= self.reid_failure_threshold:
+                print(f"Identity switch detected for track {track_id}: {current_name} -> {best_match_name}")
+                
+                # Record identity change
+                if track_id not in self.identity_changes:
+                    self.identity_changes[track_id] = []
+                
+                self.identity_changes[track_id].append({
+                    'time': current_time,
+                    'from': current_name,
+                    'to': best_match_name,
+                    'reason': 'identity_switch',
+                    'confidence': 1.0 - min_distance,
+                    'after_failures': self.reid_failure_counts[track_id]
+                })
+                
+                # Remove from old known people track mapping
+                if current_name in self.known_people_tracks and track_id in self.known_people_tracks[current_name]:
+                    self.known_people_tracks[current_name].remove(track_id)
+                
+                # Update to new identity
+                self.tracked_objects[track_id]['name'] = best_match_name
+                
+                # Add to new known people track mapping
+                if best_match_name not in self.known_people_tracks:
+                    self.known_people_tracks[best_match_name] = []
+                if track_id not in self.known_people_tracks[best_match_name]:
+                    self.known_people_tracks[best_match_name].append(track_id)
+                
+                identity_changed = True
+                # Reset failure count
+                self.reid_failure_counts[track_id] = 0
+                
+                # Update re-ID event for switch
+                reid_event['result'] = 'identity_switched'
+        
+        # Case 3: Identity confirmed
+        elif (best_match_name != "UNK" and current_name == best_match_name) or (best_match_id == track_id):
+            # Identity confirmed - reset failure count
+            self.reid_failure_counts[track_id] = 0
+            
+            # Update re-ID event
+            reid_event['result'] = 'identity_confirmed'
+        
+        # Update feature history and database
+        avg_feature = self._update_feature_history(track_id, face_feature)
+        if track_id in self.face_database:
+            self.face_database[track_id]['feature'] = avg_feature
+            self.face_database[track_id]['last_seen'] = current_time
+        
+        # Save the re-ID event
+        self.reid_events[track_id].append(reid_event)
+        
+        return identity_changed
+
     def update(self, frame, detections, current_time=None):
         """Update tracks with performance optimizations and Hungarian matching algorithm."""
         if current_time is None:
@@ -514,6 +697,12 @@ class PersonTracker:
                     intervals = self.time_data[track_id]['active_intervals']
                     if not intervals or intervals[-1][1] is not None:
                         intervals.append([current_time, None])
+                
+                # --- NEW: Periodic Re-identification Check ---
+                if self._should_perform_reid(track_id, current_time):
+                    # Extract face feature for re-identification
+                    face_feature = self._extract_face_feature(frame, bbox)
+                    self._handle_reid_result(track_id, face_feature, current_time)
                 
                 matched_track_ids.add(track_id)
                 matched_detection_indices.add(det_idx)
@@ -850,6 +1039,39 @@ class PersonTracker:
         
         return (new_x1, new_y1, new_x2, new_y2)
 
+    def get_reid_stats(self):
+        """Return statistics about re-identification and identity switches"""
+        # Count total re-ID attempts
+        reid_count = sum(len(events) for events in self.reid_events.values())
+        
+        # Count successful identity confirmations
+        confirmed_count = 0
+        for track_id, events in self.reid_events.items():
+            for event in events:
+                if event.get('result') == 'identity_confirmed':
+                    confirmed_count += 1
+        
+        # Count identity switches
+        switch_count = 0
+        for track_id, changes in self.identity_changes.items():
+            for change in changes:
+                if change.get('reason') == 'identity_switch':
+                    switch_count += 1
+        
+        # Count newly identified tracks (unknown to known)
+        identified_count = 0
+        for track_id, changes in self.identity_changes.items():
+            for change in changes:
+                if change.get('reason') == 'identified_unknown':
+                    identified_count += 1
+        
+        return {
+            'total_reid_attempts': reid_count,
+            'identity_confirmations': confirmed_count,
+            'identity_switches': switch_count,
+            'newly_identified': identified_count
+        }
+
 class CameraManager:
     def __init__(self, camera_ids=None):
         self.cameras = {}  # {id: {'cap': VideoCapture, 'frame': frame, 'thread': thread, 'running': bool}}
@@ -1134,6 +1356,57 @@ class PeopleTrackingGUI:
                                variable=self.conf_threshold, length=200)
         conf_slider.pack(anchor=tk.W, padx=5, pady=2)
         
+        # Add Re-ID settings
+        reid_frame = ttk.LabelFrame(settings_frame, text="Re-Identification")
+        reid_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Enable/disable Re-ID
+        reid_enable_frame = ttk.Frame(reid_frame)
+        reid_enable_frame.pack(fill=tk.X, pady=2)
+        
+        self.reid_enabled_var = tk.BooleanVar(value=True)
+        reid_enabled_check = ttk.Checkbutton(
+            reid_enable_frame, 
+            text="Enable Periodic Re-ID", 
+            variable=self.reid_enabled_var,
+            command=self.update_reid_settings
+        )
+        reid_enabled_check.pack(side=tk.LEFT, padx=5)
+        
+        # Re-ID interval setting
+        reid_interval_frame = ttk.Frame(reid_frame)
+        reid_interval_frame.pack(fill=tk.X, pady=2)
+        
+        ttk.Label(reid_interval_frame, text="Re-ID Interval (seconds):").pack(side=tk.LEFT, padx=5)
+        self.reid_interval_var = tk.DoubleVar(value=5.0)
+        self.reid_interval_entry = ttk.Spinbox(
+            reid_interval_frame, 
+            from_=1.0, 
+            to=60.0, 
+            increment=1.0,
+            textvariable=self.reid_interval_var,
+            width=5,
+            command=self.update_reid_settings
+        )
+        self.reid_interval_entry.pack(side=tk.LEFT, padx=5)
+        
+        # Re-ID failure threshold setting
+        reid_threshold_frame = ttk.Frame(reid_frame)
+        reid_threshold_frame.pack(fill=tk.X, pady=2)
+        
+        ttk.Label(reid_threshold_frame, text="Identity Switch Threshold:").pack(side=tk.LEFT, padx=5)
+        self.reid_threshold_var = tk.IntVar(value=3)
+        self.reid_threshold_entry = ttk.Spinbox(
+            reid_threshold_frame, 
+            from_=1, 
+            to=10, 
+            increment=1,
+            textvariable=self.reid_threshold_var,
+            width=5,
+            command=self.update_reid_settings
+        )
+        self.reid_threshold_entry.pack(side=tk.LEFT, padx=5)
+        
         # Statistics frame
         stats_frame = ttk.LabelFrame(self.right_frame, text="Statistics")
         stats_frame.pack(fill=tk.X, pady=(0, 10))
@@ -1143,6 +1416,10 @@ class PeopleTrackingGUI:
         
         self.fps_var = tk.StringVar(value="FPS: 0")
         ttk.Label(stats_frame, textvariable=self.fps_var).pack(anchor=tk.W, padx=5, pady=5)
+        
+        # Re-ID statistics
+        self.reid_stats_var = tk.StringVar(value="Re-IDs: 0 | ID Switches: 0")
+        ttk.Label(stats_frame, textvariable=self.reid_stats_var).pack(anchor=tk.W, padx=5, pady=5)
         
         # Log frame (at bottom of right frame as requested)
         self.log_frame = ttk.LabelFrame(self.right_frame, text="Activity Log")
@@ -1162,6 +1439,10 @@ class PeopleTrackingGUI:
         self.trackers = {}  # {camera_id: PersonTracker}
         self.camera_canvases = {}  # {camera_id: canvas}
         self.camera_photos = {}  # {camera_id: PhotoImage} - Store PhotoImage refs
+        
+        # Re-ID statistics tracking
+        self.reid_counter = 0
+        self.identity_switch_counter = 0
         
         # Improved thread control and monitoring
         self.processing_thread = None
@@ -1190,7 +1471,22 @@ class PeopleTrackingGUI:
         
         # Add default camera
         self.add_camera() # This calls setup_camera_grid
-    
+
+    def update_reid_settings(self):
+        """Update Re-ID settings for all trackers"""
+        # Get current values from UI
+        enabled = self.reid_enabled_var.get()
+        interval = self.reid_interval_var.get()
+        threshold = self.reid_threshold_var.get()
+        
+        # Update all trackers with new settings
+        for camera_id, tracker in self.trackers.items():
+            tracker.periodic_reid_enabled = enabled
+            tracker.periodic_reid_interval = interval
+            tracker.reid_failure_threshold = threshold
+        
+        self.log_message(f"Updated Re-ID settings: Enabled={enabled}, Interval={interval}s, Switch Threshold={threshold}")
+
     def add_camera(self):
         """Add a new camera based on the camera_var entry"""
         camera_id_str = self.camera_var.get()
@@ -1220,8 +1516,12 @@ class PeopleTrackingGUI:
         # Add to UI list
         self.camera_listbox.insert(tk.END, f"Camera {camera_id}")
         
-        # Create a tracker for this camera
-        self.trackers[camera_id] = PersonTracker()
+        # Create a tracker for this camera with current Re-ID settings
+        tracker = PersonTracker()
+        tracker.periodic_reid_enabled = self.reid_enabled_var.get()
+        tracker.periodic_reid_interval = self.reid_interval_var.get()
+        tracker.reid_failure_threshold = self.reid_threshold_var.get()
+        self.trackers[camera_id] = tracker
         
         # Recreate the camera grid when cameras change
         self.setup_camera_grid()
@@ -1309,6 +1609,172 @@ class PeopleTrackingGUI:
             canvas = tk.Canvas(camera_container, bg="black", width=320, height=240) # Initial size hint
             canvas.pack(fill=tk.BOTH, expand=True)
             self.camera_canvases[camera_id] = canvas
+    
+    def process_frames_loop(self):
+        """Dedicated thread that processes frames at a controlled rate"""
+        self.log_message("Processing thread started")
+        frame_count = 0
+        start_time = time.time()
+        last_fps_update = start_time
+        camera_ids = self.camera_manager.get_camera_ids()
+        
+        # Create a processing queue to handle one camera at a time
+        camera_queue = deque(camera_ids)
+        
+        # Using separate detection and tracking batches for better parallelism
+        detection_batch = {}  # Store frames for object detection
+        tracking_results = {}  # Store tracking results
+        
+        # Re-ID event counters
+        reid_count = 0
+        id_switch_count = 0
+        id_confirm_count = 0
+        id_new_count = 0
+        last_stats_update = start_time
+        
+        while self.processing_active:
+            process_start = time.time()
+            processed_this_loop = False
+            active_people_counts = {}
+            
+            if not camera_queue:
+                camera_queue.extend(camera_ids)  # Refill the queue if empty
+            
+            # Process one camera per iteration for more balanced processing
+            if camera_queue:
+                camera_id = camera_queue[0]
+                camera_queue.popleft()  # Remove the camera we're about to process
+                
+                try:
+                    # Try to get the latest frame from the queue
+                    try:
+                        frame, timestamp = self.camera_manager.frame_queues[camera_id].get_nowait()
+                    except queue.Empty:
+                        time.sleep(0.001)  # Tiny sleep to avoid CPU spin
+                        continue
+
+                    processed_this_loop = True
+                    
+                    # Store frame for detection
+                    detection_batch[camera_id] = frame
+                    
+                    # STEP 1: Run object detection (expensive but needed for all frames)
+                    detections = self.detect_people(frame)
+                    
+                    # STEP 2: Update tracker (IoU + occasional Face Re-ID)
+                    tracker = self.trackers[camera_id]
+                    
+                    # Capture Re-ID stats before update
+                    pre_reid_stats = tracker.get_reid_stats()
+                    
+                    tracked_objects = tracker.update(frame, detections)
+                    
+                    # Capture Re-ID stats after update and calculate differences
+                    post_reid_stats = tracker.get_reid_stats()
+                    
+                    # Calculate changes in stats
+                    new_reids = post_reid_stats['total_reid_attempts'] - pre_reid_stats['total_reid_attempts']
+                    new_switches = post_reid_stats['identity_switches'] - pre_reid_stats['identity_switches']
+                    new_confirmations = post_reid_stats['identity_confirmations'] - pre_reid_stats['identity_confirmations']
+                    new_identifications = post_reid_stats['newly_identified'] - pre_reid_stats['newly_identified']
+                    
+                    # Accumulate counters
+                    reid_count += new_reids
+                    id_switch_count += new_switches
+                    id_confirm_count += new_confirmations
+                    id_new_count += new_identifications
+                    
+                    # Log significant events
+                    if new_reids > 0:
+                        self.log_message(f"Performed {new_reids} re-ID(s) on camera {camera_id}")
+                    
+                    if new_switches > 0:
+                        self.log_message(f"Detected {new_switches} identity switch(es) on camera {camera_id}")
+                        
+                    if new_identifications > 0:
+                        self.log_message(f"Newly identified {new_identifications} person(s) on camera {camera_id}")
+                    
+                    # Store tracking results
+                    tracking_results[camera_id] = tracked_objects
+                    
+                    # STEP 3: Draw results (on a copy)
+                    result_frame = self.draw_results(frame.copy(), tracked_objects)
+                    
+                    # Track statistics
+                    active_count = sum(1 for obj in tracked_objects.values() if obj.get('active', False))
+                    active_people_counts[camera_id] = active_count
+                    frame_count += 1
+                    self.processing_frame_count += 1
+                    
+                    # Store processed frame result - always replace older frames
+                    try:
+                        # Non-blocking put
+                        self.camera_manager.processed_frame_queues[camera_id].put_nowait(
+                            (result_frame, tracked_objects)
+                        )
+                    except queue.Full:
+                        # If full, clear and add new frame
+                        try:
+                            self.camera_manager.processed_frame_queues[camera_id].get_nowait()
+                            self.camera_manager.processed_frame_queues[camera_id].put_nowait(
+                                (result_frame, tracked_objects)
+                            )
+                        except (queue.Empty, queue.Full):
+                            pass
+                    
+                except Exception as e:
+                    self.log_message(f"Error processing frame from camera {camera_id}: {str(e)}")
+
+            # Calculate processing rate
+            current_time = time.time()
+            if current_time - last_fps_update >= 1.0:
+                # Update processing FPS counter
+                elapsed = current_time - start_time
+                if elapsed > 0:
+                    self.processing_fps = frame_count / elapsed
+                    
+                # Reset counters
+                frame_count = 0
+                start_time = current_time
+                last_fps_update = current_time
+                
+                # Update total active people count
+                total_people = sum(active_people_counts.values())
+                
+                # Schedule UI update on main thread
+                self.window.after(0, lambda: self.people_count_var.set(f"People count: {total_people}"))
+                
+                # Update Re-ID statistics (every second)
+                self.reid_counter += reid_count
+                self.identity_switch_counter += id_switch_count
+                
+                # Schedule detailed Re-ID stats update
+                self.window.after(0, lambda: self.reid_stats_var.set(
+                    f"Re-IDs: {self.reid_counter} | Switches: {self.identity_switch_counter} | New IDs: {id_new_count}"
+                ))
+                
+                # Reset the counters for next update
+                reid_count = 0
+                id_switch_count = 0
+                id_confirm_count = 0
+                id_new_count = 0
+            
+            # Control the processing rate - sleep only if we processed a frame
+            if processed_this_loop:
+                process_time = time.time() - process_start
+                sleep_time = max(0, self.frame_process_delay - process_time)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+            else:
+                # If no frames were processed, add a tiny sleep to avoid CPU spin
+                time.sleep(0.001)
+        
+        self.log_message("Processing thread stopped")
+    
+    def _get_reid_stats(self, tracker):
+        """Get the reid and identity switch statistics from a tracker"""
+        # Use the tracker's method directly
+        return tracker.get_reid_stats()
     
     def start_tracking(self):
         if self.is_tracking:
@@ -1414,116 +1880,6 @@ class PeopleTrackingGUI:
 
         self.log_message("Tracking stopped.")
 
-    def process_frames_loop(self):
-        """Dedicated thread that processes frames at a controlled rate"""
-        self.log_message("Processing thread started")
-        frame_count = 0
-        start_time = time.time()
-        last_fps_update = start_time
-        camera_ids = self.camera_manager.get_camera_ids()
-        
-        # Create a processing queue to handle one camera at a time
-        camera_queue = deque(camera_ids)
-        
-        # Using separate detection and tracking batches for better parallelism
-        detection_batch = {}  # Store frames for object detection
-        tracking_results = {}  # Store tracking results
-        
-        while self.processing_active:
-            process_start = time.time()
-            processed_this_loop = False
-            active_people_counts = {}
-            
-            if not camera_queue:
-                camera_queue.extend(camera_ids)  # Refill the queue if empty
-            
-            # Process one camera per iteration for more balanced processing
-            if camera_queue:
-                camera_id = camera_queue[0]
-                camera_queue.popleft()  # Remove the camera we're about to process
-                
-                try:
-                    # Try to get the latest frame from the queue
-                    try:
-                        frame, timestamp = self.camera_manager.frame_queues[camera_id].get_nowait()
-                    except queue.Empty:
-                        time.sleep(0.001)  # Tiny sleep to avoid CPU spin
-                        continue
-
-                    processed_this_loop = True
-                    
-                    # Store frame for detection
-                    detection_batch[camera_id] = frame
-                    
-                    # STEP 1: Run object detection (expensive but needed for all frames)
-                    detections = self.detect_people(frame)
-                    
-                    # STEP 2: Update tracker (IoU + occasional Face Re-ID)
-                    tracker = self.trackers[camera_id]
-                    tracked_objects = tracker.update(frame, detections)
-                    
-                    # Store tracking results
-                    tracking_results[camera_id] = tracked_objects
-                    
-                    # STEP 3: Draw results (on a copy)
-                    result_frame = self.draw_results(frame.copy(), tracked_objects)
-                    
-                    # Track statistics
-                    active_count = sum(1 for obj in tracked_objects.values() if obj.get('active', False))
-                    active_people_counts[camera_id] = active_count
-                    frame_count += 1
-                    self.processing_frame_count += 1
-                    
-                    # Store processed frame result - always replace older frames
-                    try:
-                        # Non-blocking put
-                        self.camera_manager.processed_frame_queues[camera_id].put_nowait(
-                            (result_frame, tracked_objects)
-                        )
-                    except queue.Full:
-                        # If full, clear and add new frame
-                        try:
-                            self.camera_manager.processed_frame_queues[camera_id].get_nowait()
-                            self.camera_manager.processed_frame_queues[camera_id].put_nowait(
-                                (result_frame, tracked_objects)
-                            )
-                        except (queue.Empty, queue.Full):
-                            pass
-                    
-                except Exception as e:
-                    self.log_message(f"Error processing frame from camera {camera_id}: {str(e)}")
-
-            # Calculate processing rate
-            current_time = time.time()
-            if current_time - last_fps_update >= 1.0:
-                # Update processing FPS counter
-                elapsed = current_time - start_time
-                if elapsed > 0:
-                    self.processing_fps = frame_count / elapsed
-                    
-                # Reset counters
-                frame_count = 0
-                start_time = current_time
-                last_fps_update = current_time
-                
-                # Update total active people count
-                total_people = sum(active_people_counts.values())
-                
-                # Schedule UI update on main thread
-                self.window.after(0, lambda: self.people_count_var.set(f"People count: {total_people}"))
-            
-            # Control the processing rate - sleep only if we processed a frame
-            if processed_this_loop:
-                process_time = time.time() - process_start
-                sleep_time = max(0, self.frame_process_delay - process_time)
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-            else:
-                # If no frames were processed, add a tiny sleep to avoid CPU spin
-                time.sleep(0.001)
-        
-        self.log_message("Processing thread stopped")
-    
     def display_frames_loop(self):
         """Dedicated thread that updates the GUI at a controlled rate"""
         self.log_message("Display thread started")
@@ -1718,6 +2074,18 @@ class PeopleTrackingGUI:
             is_temporary = obj_data.get('is_temporary', False)
             name = obj_data.get('name', 'UNK')
             
+            # Check if this track was recently re-identified
+            recently_reid = False
+            reid_time = None
+            
+            # For permanent tracks, check if a re-ID happened in the last second
+            if not is_temporary and not isinstance(obj_id, str):
+                for tracker in self.trackers.values():
+                    if obj_id in tracker.last_reid_checks:
+                        reid_time = tracker.last_reid_checks[obj_id]
+                        recently_reid = (current_time - reid_time) < 1.0  # Show indicator for 1 second
+                        break
+            
             # Calculate duration
             if is_temporary:
                 if 'first_seen' in obj_data:
@@ -1763,6 +2131,25 @@ class PeopleTrackingGUI:
                     # Green for known people
                     color = (0, 255, 0)  # Green in BGR
                     label = f"{name} ({duration_str})"
+                
+                # Change color if recently re-identified
+                if recently_reid:
+                    # Bright cyan for recently re-identified tracks
+                    color = (255, 255, 0)  # Cyan in BGR
+                    
+                    # Add "Re-ID" to the label
+                    if reid_time:
+                        time_since_reid = current_time - reid_time
+                        label = f"{label} [Re-ID: {time_since_reid:.1f}s ago]"
+                    else:
+                        label = f"{label} [Re-ID]"
+                    
+                    # Check if this track has had identity switches
+                    for tracker in self.trackers.values():
+                        if obj_id in tracker.reid_failure_counts and tracker.reid_failure_counts[obj_id] > 0:
+                            # Add warning for potential identity confusion
+                            label += f" [Switch Confidence: {tracker.reid_failure_counts[obj_id]}/{tracker.reid_failure_threshold}]"
+                            break
 
             # Draw box with thickness proportional to box size
             thickness = max(1, min(3, int((x2-x1) / 200 + 1)))
@@ -1771,7 +2158,7 @@ class PeopleTrackingGUI:
             cv2.rectangle(result, (x1, y1), (x2, y2), color, thickness)
             
             # Calculate label position (above the box)
-            text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
+            text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
             cv2.rectangle(result, 
                          (x1, y1 - text_size[1] - 10), 
                          (x1 + text_size[0] + 10, y1), 
@@ -1779,7 +2166,17 @@ class PeopleTrackingGUI:
             
             # Draw text with black color for better contrast
             cv2.putText(result, label, (x1 + 5, y1 - 5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+                       
+            # Draw indicator on top of the box for recently re-identified
+            if recently_reid:
+                # Draw a small circle on top of the box
+                center_x = x1 + (x2 - x1) // 2
+                cv2.circle(result, (center_x, y1 - 20), 8, (255, 255, 0), -1)  # Filled cyan circle
+                
+                # Draw Re-ID text inside circle
+                cv2.putText(result, "R", (center_x - 4, y1 - 17), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         
         return result
     
@@ -1853,7 +2250,9 @@ class PeopleTrackingGUI:
             # Create hierarchical structure
             structured_data = {
                 "known_people": {},
-                "unknown_people": []
+                "unknown_people": [],
+                "identity_changes": {},  # New section for tracking identity changes
+                "reid_events": {}       # New section for re-ID events
             }
             
             # Process all cameras' data
@@ -1897,6 +2296,34 @@ class PeopleTrackingGUI:
                                     "duration": self._format_duration(duration_seconds)
                                 }
                                 structured_data["known_people"][name]["tracks"].append(track_entry)
+                        
+                        # Add identity changes for this track if any
+                        if track_id in tracker.identity_changes and tracker.identity_changes[track_id]:
+                            changes = tracker.identity_changes[track_id]
+                            for change in changes:
+                                change_copy = change.copy()
+                                change_copy['time'] = datetime.fromtimestamp(change['time']).strftime("%Y-%m-%d %H:%M:%S")
+                                
+                                # Add to identity changes
+                                if str(track_id) not in structured_data["identity_changes"]:
+                                    structured_data["identity_changes"][str(track_id)] = []
+                                
+                                change_copy['camera'] = camera_id
+                                structured_data["identity_changes"][str(track_id)].append(change_copy)
+                        
+                        # Add re-ID events for this track if any
+                        if track_id in tracker.reid_events and tracker.reid_events[track_id]:
+                            events = tracker.reid_events[track_id]
+                            for event in events:
+                                event_copy = event.copy()
+                                event_copy['time'] = datetime.fromtimestamp(event['time']).strftime("%Y-%m-%d %H:%M:%S")
+                                
+                                # Add to re-ID events
+                                if str(track_id) not in structured_data["reid_events"]:
+                                    structured_data["reid_events"][str(track_id)] = []
+                                
+                                event_copy['camera'] = camera_id
+                                structured_data["reid_events"][str(track_id)].append(event_copy)
                 
                 # Process unknown people
                 unknown_entries = [entry for entry in camera_data if not entry.get('is_known', False)]
@@ -1924,6 +2351,20 @@ class PeopleTrackingGUI:
                                 "total_duration": entry['duration']
                             }
                             structured_data["unknown_people"].append(unknown_entry)
+                        
+                        # Add identity changes for unknown tracks too
+                        if track_id in tracker.identity_changes and tracker.identity_changes[track_id]:
+                            changes = tracker.identity_changes[track_id]
+                            for change in changes:
+                                change_copy = change.copy()
+                                change_copy['time'] = datetime.fromtimestamp(change['time']).strftime("%Y-%m-%d %H:%M:%S")
+                                
+                                # Add to identity changes
+                                if str(track_id) not in structured_data["identity_changes"]:
+                                    structured_data["identity_changes"][str(track_id)] = []
+                                
+                                change_copy['camera'] = camera_id
+                                structured_data["identity_changes"][str(track_id)].append(change_copy)
             
             # Ask user for save location
             file_path = filedialog.asksaveasfilename(
@@ -1956,6 +2397,14 @@ class PeopleTrackingGUI:
                 self.log_message("\nUnknown Tracks:")
                 for track in structured_data["unknown_people"]:
                     self.log_message(f"  ID {track['id']} (Camera {track['camera']}): {track['track_start']} -> {track['track_end']} ({track['duration']})")
+            
+            # Log identity changes
+            if structured_data["identity_changes"]:
+                self.log_message("\nIdentity Changes:")
+                for track_id, changes in structured_data["identity_changes"].items():
+                    self.log_message(f"  Track {track_id}:")
+                    for change in changes:
+                        self.log_message(f"    {change['time']}: {change['from']} → {change['to']} ({change['reason']})")
             
             messagebox.showinfo("Success", f"Time data successfully exported to\n{file_path}")
             
