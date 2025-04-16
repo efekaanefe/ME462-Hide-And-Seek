@@ -50,13 +50,11 @@ class PersonTracker:
         self.iou_threshold = 0.3  # Minimum IoU for matching consideration
         self.feature_threshold = 0.6  # More lenient threshold for known people
         self.reidentification_threshold = 0.8
-        self.face_detector_backend = "mtcnn"
         
         # Periodic re-identification settings
         self.periodic_reid_enabled = True  # Enable periodic re-identification
         self.periodic_reid_interval = 5.0  # Seconds between re-identification checks
         self.last_reid_checks = {}  # Track last re-identification time for each track
-        self.identity_confidence_scores = {}  # Store confidence scores for each track's identity
         self.reid_failure_threshold = 3  # Number of failed re-IDs before considering identity switch
         self.reid_failure_counts = {}  # Count re-ID failures for each track
         
@@ -84,17 +82,15 @@ class PersonTracker:
         self.max_feature_history = 5  # Keep last 5 features for each ID
         
         # Add performance settings
-        self.face_detection_interval = 5  # Only run face detection every N frames
+        self.face_detection_interval = 10  # Only run face detection every N frames
         self.frame_count = 0
         self.last_face_detection_time = 0
         self.min_face_detection_interval = 0.5  # Minimum seconds between full face detections
-        self.detection_downsample = 0.5  # Downsample factor for face detection (0.5 = half resolution)
         
         # Motion prediction parameters
         self.velocity_history = {}  # {id: [list of recent velocity vectors]}
         self.max_velocity_history = 3  # Keep last 3 velocity measurements
         self.use_motion_prediction = True  # Enable motion prediction for better tracking
-        self.kalman_filters = {}  # Store Kalman filters for each track
         
         if model is None:
              print("WARNING: YOLO model not available. Face re-identification will be disabled.")
