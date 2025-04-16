@@ -16,6 +16,7 @@ import json
 from ultralytics import YOLO
 import dlib
 import face_recognition  # This uses dlib internally with a more convenient API
+from scipy.optimize import linear_sum_assignment  # Added for Hungarian Algorithm
 
 # Check if CUDA is available
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -46,10 +47,9 @@ class PersonTracker:
         self.face_database = {}  # Permanent storage: {id: {'feature': feature_vector, 'last_seen': timestamp}}
         self.disappear_threshold = 2.0
         self.reid_time_window = 1000.0  # Very long to effectively keep all tracks for re-id
-        # self.iou_threshold = 0.3
+        self.iou_threshold = 0.3  # Minimum IoU for matching consideration
         self.feature_threshold = 0.8  # More lenient threshold for known people
         self.reidentification_threshold = 0.8
-        # self.face_model_name = "Facenet"
         self.face_detector_backend = "mtcnn"
         
         # Known people database
@@ -77,6 +77,12 @@ class PersonTracker:
         self.last_face_detection_time = 0
         self.min_face_detection_interval = 0.5  # Minimum seconds between full face detections
         self.detection_downsample = 0.5  # Downsample factor for face detection (0.5 = half resolution)
+        
+        # Motion prediction parameters
+        self.velocity_history = {}  # {id: [list of recent velocity vectors]}
+        self.max_velocity_history = 3  # Keep last 3 velocity measurements
+        self.use_motion_prediction = True  # Enable motion prediction for better tracking
+        self.kalman_filters = {}  # Store Kalman filters for each track
         
         if model is None:
              print("WARNING: YOLO model not available. Face re-identification will be disabled.")
@@ -319,8 +325,147 @@ class PersonTracker:
 
         return best_match_id, best_match_name, min_distance
 
+    def _calculate_appearance_similarity(self, frame, bbox1, bbox2):
+        """
+        Calculate appearance similarity between two bounding boxes regions.
+        Returns a similarity score between 0 and 1 (higher is more similar).
+        """
+        try:
+            # Extract regions from frame
+            x1_1, y1_1, x2_1, y2_1 = map(int, bbox1)
+            x1_2, y1_2, x2_2, y2_2 = map(int, bbox2)
+            
+            # Ensure coordinates are within frame boundaries
+            height, width = frame.shape[:2]
+            x1_1, y1_1 = max(0, x1_1), max(0, y1_1)
+            x2_1, y2_1 = min(width, x2_1), min(height, y2_1)
+            x1_2, y1_2 = max(0, x1_2), max(0, y1_2)
+            x2_2, y2_2 = min(width, x2_2), min(height, y2_2)
+            
+            # Skip if any region is too small
+            if (x2_1 - x1_1) < 10 or (y2_1 - y1_1) < 10 or (x2_2 - x1_2) < 10 or (y2_2 - y1_2) < 10:
+                return 0.0
+                
+            # Extract regions
+            region1 = frame[y1_1:y2_1, x1_1:x2_1]
+            region2 = frame[y1_2:y2_2, x1_2:x2_2]
+            
+            # Resize to same dimensions for comparison
+            target_size = (64, 128)  # Common size for person appearance models
+            region1_resized = cv2.resize(region1, target_size, interpolation=cv2.INTER_AREA)
+            region2_resized = cv2.resize(region2, target_size, interpolation=cv2.INTER_AREA)
+            
+            # Convert to grayscale
+            gray1 = cv2.cvtColor(region1_resized, cv2.COLOR_BGR2GRAY)
+            gray2 = cv2.cvtColor(region2_resized, cv2.COLOR_BGR2GRAY)
+            
+            # Calculate histograms (fast appearance representation)
+            hist1 = cv2.calcHist([gray1], [0], None, [64], [0, 256])
+            hist2 = cv2.calcHist([gray2], [0], None, [64], [0, 256])
+            
+            # Normalize histograms
+            cv2.normalize(hist1, hist1, 0, 1, cv2.NORM_MINMAX)
+            cv2.normalize(hist2, hist2, 0, 1, cv2.NORM_MINMAX)
+            
+            # Compare histograms
+            similarity = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
+            
+            # Handle NaN or invalid values
+            if np.isnan(similarity):
+                return 0.0
+                
+            # Ensure range [0, 1]
+            return max(0.0, min(float(similarity), 1.0))
+            
+        except Exception as e:
+            print(f"Error calculating appearance similarity: {e}")
+            return 0.0
+
+    def _hungarian_match_iou_appearance(self, frame, tracks, detections, current_time):
+        """
+        Enhanced Hungarian algorithm using both IoU and appearance similarity.
+        
+        Args:
+            frame: The current video frame
+            tracks: Dictionary of active tracks {id: track_data}
+            detections: List of detection dictionaries with 'bbox' key
+            current_time: Current timestamp
+            
+        Returns:
+            matches: List of tuples (track_id, detection_idx)
+            unmatched_tracks: List of track_ids that were not matched
+            unmatched_detections: List of detection indices that were not matched
+        """
+        if not tracks or not detections:
+            return [], list(tracks.keys()), list(range(len(detections)))
+        
+        # Create cost matrix (higher cost = less likely match)
+        cost_matrix = np.ones((len(tracks), len(detections))) * float('inf')
+        
+        # Fill the cost matrix with a combination of IoU and appearance similarity
+        for i, (track_id, track_data) in enumerate(tracks.items()):
+            # Get current bbox
+            track_bbox = track_data['bbox']
+            
+            # Apply motion prediction if enabled
+            if self.use_motion_prediction and 'prev_time' in track_data:
+                time_delta = current_time - track_data['prev_time']
+                predicted_bbox = self._predict_bbox(track_id, time_delta)
+            else:
+                predicted_bbox = track_bbox
+            
+            for j, detection in enumerate(detections):
+                det_bbox = detection['bbox']
+                
+                # Calculate IoU with both predicted and current bbox
+                current_iou = self._calculate_iou(track_bbox, det_bbox)
+                predicted_iou = self._calculate_iou(predicted_bbox, det_bbox)
+                best_iou = max(current_iou, predicted_iou)
+                
+                # Only calculate appearance similarity if IoU is reasonable
+                # This improves performance by skipping obviously poor matches
+                if best_iou > 0.1:  # Lower threshold for appearance check
+                    # Calculate appearance similarity
+                    appearance_similarity = self._calculate_appearance_similarity(frame, track_bbox, det_bbox)
+                    
+                    # Combine IoU and appearance similarity (weighted average)
+                    # Give more weight to IoU initially, but use appearance for resolving close cases
+                    combined_score = 0.7 * best_iou + 0.3 * appearance_similarity
+                    
+                    # For boxes with significant overlap, give more weight to appearance
+                    if best_iou > 0.5:
+                        combined_score = 0.4 * best_iou + 0.6 * appearance_similarity
+                        
+                    # Only consider as match if combined score is good enough
+                    if combined_score > self.iou_threshold:
+                        # Convert to cost (lower is better for Hungarian algorithm)
+                        cost_matrix[i, j] = 1.0 - combined_score
+                    
+        # Use Hungarian algorithm to find optimal assignment
+        row_indices, col_indices = linear_sum_assignment(cost_matrix)
+        
+        # Create matches, unmatched_tracks, and unmatched_detections
+        matches = []
+        track_ids = list(tracks.keys())
+        
+        for row, col in zip(row_indices, col_indices):
+            if cost_matrix[row, col] != float('inf'):
+                matches.append((track_ids[row], col))
+        
+        # Find unmatched tracks
+        matched_track_indices = row_indices.tolist()
+        unmatched_tracks = [track_id for i, track_id in enumerate(track_ids) 
+                           if i not in matched_track_indices]
+        
+        # Find unmatched detections
+        matched_detection_indices = col_indices.tolist()
+        unmatched_detections = [j for j in range(len(detections)) 
+                              if j not in matched_detection_indices]
+        
+        return matches, unmatched_tracks, unmatched_detections
+
     def update(self, frame, detections, current_time=None):
-        """Update tracks with performance optimizations for speed."""
+        """Update tracks with performance optimizations and Hungarian matching algorithm."""
         if current_time is None:
             current_time = time.time()
         
@@ -331,125 +476,140 @@ class PersonTracker:
         
         active_objects = {}
         matched_track_ids = set()
-        matched_temp_ids = set()
-        newly_detected_indices = set(range(len(detections)))
+        matched_detection_indices = set()
         
-        # --- STEP 1: First try to match active permanent tracks by location ---
-        # This is much faster than face matching and handles most cases
+        # --- STEP 1: Match active permanent tracks using enhanced Hungarian algorithm ---
         active_permanent_tracks = {id: data for id, data in self.tracked_objects.items() 
                                  if data.get('active', True) and not isinstance(id, str)}
         
-        if active_permanent_tracks and newly_detected_indices:
-            for track_id, track_data in active_permanent_tracks.items():
-                if not track_data.get('active', True):
-                    continue
+        if active_permanent_tracks and detections:
+            # Apply enhanced Hungarian algorithm that uses both IoU and appearance
+            matches, unmatched_tracks, unmatched_detections = self._hungarian_match_iou_appearance(
+                frame, active_permanent_tracks, detections, current_time
+            )
+            
+            # Process matches
+            for track_id, det_idx in matches:
+                # Update track with matched detection
+                bbox = detections[det_idx]['bbox']
+                prev_bbox = self.tracked_objects[track_id]['bbox']
                 
-                # Try to find the best matching detection using IoU (much faster than face matching)
-                track_bbox = track_data['bbox']
-                best_det_idx = -1
-                best_iou = 0.3  # Threshold for IoU matching
+                # Calculate time delta for velocity update
+                prev_time = self.tracked_objects[track_id].get('prev_time', current_time)
+                dt = current_time - prev_time
                 
-                for det_idx in newly_detected_indices:
-                    det_bbox = detections[det_idx]['bbox']
-                    iou = self._calculate_iou(track_bbox, det_bbox)
-                    
-                    if iou > best_iou:
-                        best_iou = iou
-                        best_det_idx = det_idx
+                # Update track data
+                self.tracked_objects[track_id]['bbox'] = bbox
+                self.tracked_objects[track_id]['last_seen'] = current_time
                 
-                if best_det_idx != -1:
-                    # Update track with new detection (IoU matched)
-                    bbox = detections[best_det_idx]['bbox']
-                    self.tracked_objects[track_id]['bbox'] = bbox
-                    self.tracked_objects[track_id]['last_seen'] = current_time
-                    
-                    # Ensure time tracking continues
-                    if track_id in self.time_data:
-                        self.time_data[track_id]['last_seen'] = current_time
-                        intervals = self.time_data[track_id]['active_intervals']
-                        if not intervals or intervals[-1][1] is not None:
-                            intervals.append([current_time, None])
-                    
-                    matched_track_ids.add(track_id)
-                    newly_detected_indices.remove(best_det_idx)
+                # Update velocity estimation
+                if dt > 0:
+                    velocity = self._update_velocity(track_id, bbox, dt)
+                    if velocity:
+                        self.tracked_objects[track_id]['velocity'] = velocity
+                
+                # Ensure time tracking continues
+                if track_id in self.time_data:
+                    self.time_data[track_id]['last_seen'] = current_time
+                    intervals = self.time_data[track_id]['active_intervals']
+                    if not intervals or intervals[-1][1] is not None:
+                        intervals.append([current_time, None])
+                
+                matched_track_ids.add(track_id)
+                matched_detection_indices.add(det_idx)
+            
+            # Save unmatched detections for face detection step
+            newly_detected_indices = set(unmatched_detections)
+        else:
+            # If no active tracks or detections, all detections are new
+            newly_detected_indices = set(range(len(detections)))
         
         # --- STEP 2: Process remaining detections with face detection (only on some frames) ---
         if should_detect_faces:
             self.last_face_detection_time = current_time
             
-        for det_idx in list(newly_detected_indices):
-            bbox = detections[det_idx]['bbox']
-            face_feature = self._extract_face_feature(frame, bbox)
-            
-            if face_feature is not None:
-                best_match_id, name, min_distance = self._find_best_face_match(face_feature, current_time)
+            for det_idx in list(newly_detected_indices):
+                if det_idx in matched_detection_indices:
+                    continue  # Skip already matched detections
+                    
+                bbox = detections[det_idx]['bbox']
+                face_feature = self._extract_face_feature(frame, bbox)
                 
-                if best_match_id != -1:
-                    # Update existing track
-                    self.tracked_objects[best_match_id]['bbox'] = bbox
-                    self.tracked_objects[best_match_id]['last_seen'] = current_time
-                    self.tracked_objects[best_match_id]['active'] = True
-                    self.tracked_objects[best_match_id]['name'] = name
+                if face_feature is not None:
+                    best_match_id, name, min_distance = self._find_best_face_match(face_feature, current_time)
                     
-                    # Update known people tracks mapping
-                    if name != "UNK" and name not in self.known_people_tracks:
-                        self.known_people_tracks[name] = []
-                    if name != "UNK" and best_match_id not in self.known_people_tracks[name]:
-                        self.known_people_tracks[name].append(best_match_id)
-                    
-                    # Update feature history and database
-                    avg_feature = self._update_feature_history(best_match_id, face_feature)
-                    self.face_database[best_match_id]['feature'] = avg_feature
-                    self.face_database[best_match_id]['last_seen'] = current_time
-                    
-                    # Ensure time tracking continues
-                    if best_match_id in self.time_data:
-                        self.time_data[best_match_id]['last_seen'] = current_time
-                        intervals = self.time_data[best_match_id]['active_intervals']
-                        if not intervals or intervals[-1][1] is not None:
-                            intervals.append([current_time, None])
-                    
-                    matched_track_ids.add(best_match_id)
-                else:
-                    # Create new track
-                    new_id = self.next_id
-                    self.next_id += 1
-                    
-                    self.tracked_objects[new_id] = {
-                        'bbox': bbox,
-                        'first_seen': current_time,
-                        'last_seen': current_time,
-                        'active': True,
-                        'name': name
-                    }
-                    
-                    # Update known people tracks mapping for new track
-                    if name != "UNK":
-                        if name not in self.known_people_tracks:
+                    if best_match_id != -1:
+                        # Update existing track
+                        self.tracked_objects[best_match_id]['bbox'] = bbox
+                        self.tracked_objects[best_match_id]['last_seen'] = current_time
+                        self.tracked_objects[best_match_id]['active'] = True
+                        self.tracked_objects[best_match_id]['name'] = name
+                        
+                        # Update known people tracks mapping
+                        if name != "UNK" and name not in self.known_people_tracks:
                             self.known_people_tracks[name] = []
-                        self.known_people_tracks[name].append(new_id)
-                        print(f"New track {new_id} created for known person {name} (Total tracks: {len(self.known_people_tracks[name])})")
-                    
-                    # Initialize feature history and database
-                    self._update_feature_history(new_id, face_feature)
-                    self.face_database[new_id] = {
-                        'feature': face_feature,
-                        'first_seen': current_time,
-                        'last_seen': current_time
-                    }
-                    
-                    # Initialize time tracking
-                    self.time_data[new_id] = {
-                        'first_seen': current_time,
-                        'last_seen': current_time,
-                        'total_active_time': 0,
-                        'active_intervals': [[current_time, None]]
-                    }
-                    
-                    matched_track_ids.add(new_id)
+                        if name != "UNK" and best_match_id not in self.known_people_tracks[name]:
+                            self.known_people_tracks[name].append(best_match_id)
+                        
+                        # Update feature history and database
+                        avg_feature = self._update_feature_history(best_match_id, face_feature)
+                        self.face_database[best_match_id]['feature'] = avg_feature
+                        self.face_database[best_match_id]['last_seen'] = current_time
+                        
+                        # Ensure time tracking continues
+                        if best_match_id in self.time_data:
+                            self.time_data[best_match_id]['last_seen'] = current_time
+                            intervals = self.time_data[best_match_id]['active_intervals']
+                            if not intervals or intervals[-1][1] is not None:
+                                intervals.append([current_time, None])
+                        
+                        matched_track_ids.add(best_match_id)
+                        matched_detection_indices.add(det_idx)
+                    else:
+                        # Create new track
+                        new_id = self.next_id
+                        self.next_id += 1
+                        
+                        self.tracked_objects[new_id] = {
+                            'bbox': bbox,
+                            'first_seen': current_time,
+                            'last_seen': current_time,
+                            'active': True,
+                            'name': name
+                        }
+                        
+                        # Update known people tracks mapping for new track
+                        if name != "UNK":
+                            if name not in self.known_people_tracks:
+                                self.known_people_tracks[name] = []
+                            self.known_people_tracks[name].append(new_id)
+                            print(f"New track {new_id} created for known person {name} (Total tracks: {len(self.known_people_tracks[name])})")
+                        
+                        # Initialize feature history and database
+                        self._update_feature_history(new_id, face_feature)
+                        self.face_database[new_id] = {
+                            'feature': face_feature,
+                            'first_seen': current_time,
+                            'last_seen': current_time
+                        }
+                        
+                        # Initialize time tracking
+                        self.time_data[new_id] = {
+                            'first_seen': current_time,
+                            'last_seen': current_time,
+                            'total_active_time': 0,
+                            'active_intervals': [[current_time, None]]
+                        }
+                        
+                        matched_track_ids.add(new_id)
+                        matched_detection_indices.add(det_idx)
         
         # Create temporary tracks for remaining detections (without face detection)
-        for det_idx in newly_detected_indices:
+        matched_temp_ids = set()
+        for det_idx in range(len(detections)):
+            if det_idx in matched_detection_indices:
+                continue  # Skip already matched detections
+                
             bbox = detections[det_idx]['bbox']
             temp_id = f"temp_{self.temp_id_counter}"
             self.temp_id_counter += 1
@@ -606,6 +766,89 @@ class PersonTracker:
         
         # Calculate IoU
         return intersection_area / union_area if union_area > 0 else 0
+
+    def _update_velocity(self, track_id, current_bbox, dt):
+        """Update velocity estimation for a track"""
+        if track_id not in self.tracked_objects:
+            return None
+            
+        # Get previous bbox
+        prev_bbox = self.tracked_objects[track_id].get('prev_bbox')
+        if prev_bbox is None:
+            # Store current bbox as previous for next update
+            self.tracked_objects[track_id]['prev_bbox'] = current_bbox
+            self.tracked_objects[track_id]['prev_time'] = time.time()
+            return None
+            
+        # Calculate center points
+        x1_prev, y1_prev, x2_prev, y2_prev = prev_bbox
+        x1_curr, y1_curr, x2_curr, y2_curr = current_bbox
+        
+        center_prev_x = (x1_prev + x2_prev) / 2
+        center_prev_y = (y1_prev + y2_prev) / 2
+        center_curr_x = (x1_curr + x2_curr) / 2
+        center_curr_y = (y1_curr + y2_curr) / 2
+        
+        # Calculate velocity (change in position over time)
+        if dt > 0:
+            velocity_x = (center_curr_x - center_prev_x) / dt
+            velocity_y = (center_curr_y - center_prev_y) / dt
+        else:
+            velocity_x, velocity_y = 0, 0
+            
+        # Initialize velocity history if needed
+        if track_id not in self.velocity_history:
+            self.velocity_history[track_id] = []
+            
+        # Add current velocity to history
+        self.velocity_history[track_id].append((velocity_x, velocity_y))
+        
+        # Keep only recent velocity measurements
+        if len(self.velocity_history[track_id]) > self.max_velocity_history:
+            self.velocity_history[track_id].pop(0)
+            
+        # Store current bbox as previous for next update
+        self.tracked_objects[track_id]['prev_bbox'] = current_bbox
+        self.tracked_objects[track_id]['prev_time'] = time.time()
+        
+        # Return average velocity
+        if self.velocity_history[track_id]:
+            avg_velocity_x = sum(v[0] for v in self.velocity_history[track_id]) / len(self.velocity_history[track_id])
+            avg_velocity_y = sum(v[1] for v in self.velocity_history[track_id]) / len(self.velocity_history[track_id])
+            return (avg_velocity_x, avg_velocity_y)
+        return (0, 0)
+        
+    def _predict_bbox(self, track_id, time_delta):
+        """Predict new bounding box position based on velocity"""
+        if track_id not in self.tracked_objects or not self.use_motion_prediction:
+            return self.tracked_objects[track_id]['bbox']
+            
+        # Get current bbox and velocity
+        bbox = self.tracked_objects[track_id]['bbox']
+        velocity = self.tracked_objects[track_id].get('velocity', (0, 0))
+        
+        if velocity is None or (velocity[0] == 0 and velocity[1] == 0):
+            return bbox
+            
+        # Unpack values
+        x1, y1, x2, y2 = bbox
+        vel_x, vel_y = velocity
+        
+        # Predict new center based on velocity
+        center_x = (x1 + x2) / 2 + vel_x * time_delta
+        center_y = (y1 + y2) / 2 + vel_y * time_delta
+        
+        # Calculate width and height
+        width = x2 - x1
+        height = y2 - y1
+        
+        # Create new bbox with same dimensions
+        new_x1 = center_x - width / 2
+        new_y1 = center_y - height / 2
+        new_x2 = center_x + width / 2
+        new_y2 = center_y + height / 2
+        
+        return (new_x1, new_y1, new_x2, new_y2)
 
 class CameraManager:
     def __init__(self, camera_ids=None):
