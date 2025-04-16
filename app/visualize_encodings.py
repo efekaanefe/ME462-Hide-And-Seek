@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import face_recognition
+from scipy.spatial.distance import cosine
 
 # Check if seaborn is available, but make it optional
 try:
@@ -154,6 +155,69 @@ def visualize_encodings_pca(encodings, names, title="PCA of Face Encodings"):
     plt.savefig("face_encodings_pca.png")
     plt.show()
 
+def calculate_distance(vector1, vector2, metric='euclidean'):
+    """Calculate distance between two vectors using specified metric"""
+    if metric == 'euclidean':
+        return np.linalg.norm(vector1 - vector2)
+    elif metric == 'cosine':
+        # Cosine similarity is 1 when vectors are identical, so we use 1-similarity as distance
+        return cosine(vector1, vector2)
+    else:
+        raise ValueError(f"Unknown distance metric: {metric}")
+
+def calculate_distance_stats(name_to_encodings, metric='euclidean'):
+    """Calculate intra-class and inter-class distances using specified metric"""
+    # Intra-class distances (same person)
+    intra_class_distances = []
+    for person, data in name_to_encodings.items():
+        encodings = data['encodings']
+        if len(encodings) > 1:
+            for i in range(len(encodings)):
+                for j in range(i+1, len(encodings)):
+                    distance = calculate_distance(
+                        np.array(encodings[i]), 
+                        np.array(encodings[j]),
+                        metric
+                    )
+                    intra_class_distances.append(distance)
+    
+    # Inter-class distances (different people)
+    inter_class_distances = []
+    person_names = list(name_to_encodings.keys())
+    if len(person_names) > 1:
+        for i in range(len(person_names)):
+            for j in range(i+1, len(person_names)):
+                person1 = person_names[i]
+                person2 = person_names[j]
+                
+                for enc1 in name_to_encodings[person1]['encodings']:
+                    for enc2 in name_to_encodings[person2]['encodings']:
+                        distance = calculate_distance(
+                            np.array(enc1), 
+                            np.array(enc2),
+                            metric
+                        )
+                        inter_class_distances.append(distance)
+    
+    return intra_class_distances, inter_class_distances
+
+def plot_distance_histogram(intra_distances, inter_distances, title, metric='euclidean'):
+    """Plot histogram of distances"""
+    plt.figure(figsize=(10, 6))
+    if HAS_SEABORN:
+        sns.histplot(intra_distances, color='blue', label='Same Person', alpha=0.5, kde=True)
+        sns.histplot(inter_distances, color='red', label='Different People', alpha=0.5, kde=True)
+    else:
+        plt.hist(intra_distances, color='blue', label='Same Person', alpha=0.5, bins=20)
+        plt.hist(inter_distances, color='red', label='Different People', alpha=0.5, bins=20)
+    
+    plt.title(title)
+    plt.xlabel(f'{metric.capitalize()} Distance')
+    plt.ylabel('Frequency')
+    plt.legend()
+    plt.savefig(f"distance_distribution_{metric}.png")
+    plt.tight_layout()
+
 def main():
     print("Loading face encodings...")
     name_to_encodings, all_encodings, all_names, all_image_paths = load_encodings_from_known_people()
@@ -168,58 +232,63 @@ def main():
     print("Visualizing encodings with PCA...")
     visualize_encodings_pca(all_encodings, all_names)
     
-    # Calculate and display intra-class and inter-class distances
-    print("\nCalculating distance statistics...")
+    # Calculate and display distance statistics for Euclidean distance
+    print("\nCalculating Euclidean distance statistics...")
+    euclidean_intra, euclidean_inter = calculate_distance_stats(name_to_encodings, 'euclidean')
     
-    # Intra-class distances (same person)
-    intra_class_distances = []
-    for person, data in name_to_encodings.items():
-        encodings = data['encodings']
-        if len(encodings) > 1:
-            for i in range(len(encodings)):
-                for j in range(i+1, len(encodings)):
-                    distance = np.linalg.norm(np.array(encodings[i]) - np.array(encodings[j]))
-                    intra_class_distances.append(distance)
+    if euclidean_intra:
+        avg_intra = np.mean(euclidean_intra)
+        print(f"Average Euclidean distance between same person: {avg_intra:.4f} [0.3-0.5 is good]")
     
-    # Inter-class distances (different people)
-    inter_class_distances = []
-    person_names = list(name_to_encodings.keys())
-    if len(person_names) > 1:
-        for i in range(len(person_names)):
-            for j in range(i+1, len(person_names)):
-                person1 = person_names[i]
-                person2 = person_names[j]
-                
-                for enc1 in name_to_encodings[person1]['encodings']:
-                    for enc2 in name_to_encodings[person2]['encodings']:
-                        distance = np.linalg.norm(np.array(enc1) - np.array(enc2))
-                        inter_class_distances.append(distance)
+    if euclidean_inter:
+        avg_inter = np.mean(euclidean_inter)
+        print(f"Average Euclidean distance between different people: {avg_inter:.4f} [0.7+ is good]")
     
-    # Print statistics
-    if intra_class_distances:
-        avg_intra = np.mean(intra_class_distances)
-        print(f"Average distance between same person: {avg_intra:.4f} [0.3-0.5 is good]")
-    
-    if inter_class_distances:
-        avg_inter = np.mean(inter_class_distances)
-        print(f"Average distance between different people: {avg_inter:.4f} [0.7+is good]")
-    
-    if intra_class_distances and inter_class_distances:
+    if euclidean_intra and euclidean_inter:
         # Plot distributions
-        plt.figure(figsize=(10, 6))
-        if HAS_SEABORN:
-            sns.histplot(intra_class_distances, color='blue', label='Same Person', alpha=0.5, kde=True)
-            sns.histplot(inter_class_distances, color='red', label='Different People', alpha=0.5, kde=True)
-        else:
-            plt.hist(intra_class_distances, color='blue', label='Same Person', alpha=0.5, bins=20)
-            plt.hist(inter_class_distances, color='red', label='Different People', alpha=0.5, bins=20)
-        
-        plt.title('Distance Distribution')
-        plt.xlabel('Euclidean Distance')
-        plt.ylabel('Frequency')
-        plt.legend()
-        plt.savefig("distance_distribution.png")
+        plot_distance_histogram(
+            euclidean_intra, 
+            euclidean_inter, 
+            'Euclidean Distance Distribution', 
+            'euclidean'
+        )
         plt.show()
+    
+    # Calculate and display distance statistics for Cosine distance
+    print("\nCalculating Cosine distance statistics...")
+    cosine_intra, cosine_inter = calculate_distance_stats(name_to_encodings, 'cosine')
+    
+    if cosine_intra:
+        avg_intra = np.mean(cosine_intra)
+        print(f"Average Cosine distance between same person: {avg_intra:.4f} [0.0-0.2 is good]")
+    
+    if cosine_inter:
+        avg_inter = np.mean(cosine_inter)
+        print(f"Average Cosine distance between different people: {avg_inter:.4f} [0.3+ is good]")
+    
+    if cosine_intra and cosine_inter:
+        # Plot distributions
+        plot_distance_histogram(
+            cosine_intra, 
+            cosine_inter, 
+            'Cosine Distance Distribution', 
+            'cosine'
+        )
+        plt.show()
+    
+    # Print comparison summary
+    if euclidean_intra and euclidean_inter and cosine_intra and cosine_inter:
+        euclidean_ratio = np.mean(euclidean_inter) / np.mean(euclidean_intra)
+        cosine_ratio = np.mean(cosine_inter) / np.mean(cosine_intra)
+        
+        print("\nDistance metric comparison:")
+        print(f"Euclidean inter/intra ratio: {euclidean_ratio:.2f} [higher is better]")
+        print(f"Cosine inter/intra ratio: {cosine_ratio:.2f} [higher is better]")
+        
+        if euclidean_ratio > cosine_ratio:
+            print("Euclidean distance provides better separation for this dataset")
+        else:
+            print("Cosine distance provides better separation for this dataset")
 
 if __name__ == "__main__":
     main()

@@ -37,8 +37,17 @@ class PersonTracker:
         self.disappear_threshold = 2.0
         self.reid_time_window = 1000.0  # Very long to effectively keep all tracks for re-id
         self.iou_threshold = 0.3  # Minimum IoU for matching consideration
+        
+        # Set distance metric for feature comparison
+        self.use_cosine_distance = False  # Default is Euclidean, set to True for cosine
+        
+        # Default thresholds for Euclidean distance
         self.feature_threshold = 0.6  # More lenient threshold for known people
         self.reidentification_threshold = 0.8
+        
+        # Reserve cosine thresholds (will be used when switching metrics)
+        self.cosine_feature_threshold = 0.2  # Cosine equivalent of feature threshold
+        self.cosine_reidentification_threshold = 0.3  # Cosine equivalent of reidentification threshold
         
         # Periodic re-identification settings
         self.periodic_reid_enabled = True  # Enable periodic re-identification
@@ -232,11 +241,18 @@ class PersonTracker:
 
     # +++ Helper: Calculate Feature Distance +++
     def _calculate_feature_distance(self, feature1, feature2):
-        """Calculate distance between two face features using face_recognition"""
+        """Calculate distance between two face features using selected distance metric"""
         if feature1 is None or feature2 is None:
             return float('inf')
-        # Using face_recognition's face_distance which is optimized for dlib encodings
-        return face_recognition.face_distance([feature1], feature2)[0]
+        
+        # Choose distance metric based on configuration
+        if self.use_cosine_distance:
+            # Cosine distance: 0 is identical, 1 is completely different
+            return cosine(feature1, feature2)
+        else:
+            # Euclidean distance (face_recognition's default)
+            # Using face_recognition's face_distance which is optimized for dlib encodings
+            return face_recognition.face_distance([feature1], feature2)[0]
 
     def _update_feature_history(self, track_id, new_feature):
         """Update feature history for a track and compute average feature"""
@@ -1057,6 +1073,52 @@ class PersonTracker:
             'newly_identified': identified_count
         }
 
+    def set_distance_metric(self, use_cosine=False):
+        """Change the distance metric used for feature comparison"""
+        # If already using the requested metric, no change needed
+        if self.use_cosine_distance == use_cosine:
+            return
+            
+        # Switch the distance metric
+        self.use_cosine_distance = use_cosine
+        
+        # Swap the thresholds based on the selected metric
+        if use_cosine:
+            # Store current Euclidean thresholds
+            euclidean_feature = self.feature_threshold
+            euclidean_reid = self.reidentification_threshold
+            
+            # Set cosine thresholds
+            self.feature_threshold = self.cosine_feature_threshold
+            self.reidentification_threshold = self.cosine_reidentification_threshold
+            
+            # Store old Euclidean thresholds for future switching
+            self.cosine_feature_threshold = euclidean_feature
+            self.cosine_reidentification_threshold = euclidean_reid
+            
+            print(f"Switched to cosine distance (thresholds: feature={self.feature_threshold}, reid={self.reidentification_threshold})")
+        else:
+            # Store current cosine thresholds
+            cosine_feature = self.feature_threshold
+            cosine_reid = self.reidentification_threshold
+            
+            # Set Euclidean thresholds
+            self.feature_threshold = self.cosine_feature_threshold
+            self.reidentification_threshold = self.cosine_reidentification_threshold
+            
+            # Store old cosine thresholds for future switching
+            self.cosine_feature_threshold = cosine_feature
+            self.cosine_reidentification_threshold = cosine_reid
+            
+            print(f"Switched to Euclidean distance (thresholds: feature={self.feature_threshold}, reid={self.reidentification_threshold})")
+            
+        # Return the new thresholds for confirmation
+        return {
+            'feature_threshold': self.feature_threshold,
+            'reidentification_threshold': self.reidentification_threshold,
+            'metric': 'cosine' if self.use_cosine_distance else 'euclidean'
+        }
+
 class CameraManager:
     def __init__(self, camera_ids=None):
         self.cameras = {}  # {id: {'cap': VideoCapture, 'frame': frame, 'thread': thread, 'running': bool}}
@@ -1342,55 +1404,73 @@ class PeopleTrackingGUI:
         conf_slider.pack(anchor=tk.W, padx=5, pady=2)
         
         # Add Re-ID settings
-        reid_frame = ttk.LabelFrame(settings_frame, text="Re-Identification")
-        reid_frame.pack(fill=tk.X, padx=5, pady=5)
+        self.reid_frame = ttk.LabelFrame(settings_frame, text="Re-ID Settings")
+        self.reid_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        # Enable/disable Re-ID
-        reid_enable_frame = ttk.Frame(reid_frame)
-        reid_enable_frame.pack(fill=tk.X, pady=2)
-        
+        # Enable Re-ID
         self.reid_enabled_var = tk.BooleanVar(value=True)
-        reid_enabled_check = ttk.Checkbutton(
-            reid_enable_frame, 
-            text="Enable Periodic Re-ID", 
-            variable=self.reid_enabled_var,
-            command=self.update_reid_settings
+        self.enable_reid_check = ttk.Checkbutton(
+            self.reid_frame, 
+            text="Enable Periodic Re-Identification", 
+            variable=self.reid_enabled_var
         )
-        reid_enabled_check.pack(side=tk.LEFT, padx=5)
+        self.enable_reid_check.pack(pady=5, fill=tk.X)
         
-        # Re-ID interval setting
-        reid_interval_frame = ttk.Frame(reid_frame)
-        reid_interval_frame.pack(fill=tk.X, pady=2)
-        
-        ttk.Label(reid_interval_frame, text="Re-ID Interval (seconds):").pack(side=tk.LEFT, padx=5)
+        # Re-ID Interval (seconds)
+        ttk.Label(self.reid_frame, text="Re-ID Interval (seconds):").pack(anchor='w', padx=5)
         self.reid_interval_var = tk.DoubleVar(value=5.0)
-        self.reid_interval_entry = ttk.Spinbox(
-            reid_interval_frame, 
+        self.reid_interval_scale = ttk.Scale(
+            self.reid_frame, 
             from_=1.0, 
-            to=60.0, 
-            increment=1.0,
-            textvariable=self.reid_interval_var,
-            width=5,
-            command=self.update_reid_settings
+            to=15.0, 
+            variable=self.reid_interval_var, 
+            orient=tk.HORIZONTAL
         )
-        self.reid_interval_entry.pack(side=tk.LEFT, padx=5)
+        self.reid_interval_scale.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(self.reid_frame, textvariable=self.reid_interval_var).pack(anchor='e', padx=5)
         
-        # Re-ID failure threshold setting
-        reid_threshold_frame = ttk.Frame(reid_frame)
-        reid_threshold_frame.pack(fill=tk.X, pady=2)
-        
-        ttk.Label(reid_threshold_frame, text="Identity Switch Threshold:").pack(side=tk.LEFT, padx=5)
+        # Identity Switch Threshold
+        ttk.Label(self.reid_frame, text="Identity Switch Threshold:").pack(anchor='w', padx=5)
         self.reid_threshold_var = tk.IntVar(value=3)
-        self.reid_threshold_entry = ttk.Spinbox(
-            reid_threshold_frame, 
+        self.reid_threshold_scale = ttk.Scale(
+            self.reid_frame, 
             from_=1, 
-            to=10, 
-            increment=1,
-            textvariable=self.reid_threshold_var,
-            width=5,
+            to=5, 
+            variable=self.reid_threshold_var, 
+            orient=tk.HORIZONTAL
+        )
+        self.reid_threshold_scale.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(self.reid_frame, textvariable=self.reid_threshold_var).pack(anchor='e', padx=5)
+        
+        # Distance Metric selection
+        ttk.Label(self.reid_frame, text="Distance Metric:").pack(anchor='w', padx=5, pady=(5, 0))
+        self.distance_metric_var = tk.StringVar(value="euclidean")
+        self.distance_metric_frame = ttk.Frame(self.reid_frame)
+        self.distance_metric_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.euclidean_radio = ttk.Radiobutton(
+            self.distance_metric_frame,
+            text="Euclidean",
+            variable=self.distance_metric_var,
+            value="euclidean"
+        )
+        self.euclidean_radio.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.cosine_radio = ttk.Radiobutton(
+            self.distance_metric_frame,
+            text="Cosine",
+            variable=self.distance_metric_var,
+            value="cosine"
+        )
+        self.cosine_radio.pack(side=tk.LEFT)
+        
+        # Apply Settings button
+        self.reid_apply_btn = ttk.Button(
+            self.reid_frame, 
+            text="Apply Settings", 
             command=self.update_reid_settings
         )
-        self.reid_threshold_entry.pack(side=tk.LEFT, padx=5)
+        self.reid_apply_btn.pack(pady=5, fill=tk.X)
         
         # Statistics frame
         stats_frame = ttk.LabelFrame(self.right_frame, text="Statistics")
@@ -1463,14 +1543,17 @@ class PeopleTrackingGUI:
         enabled = self.reid_enabled_var.get()
         interval = self.reid_interval_var.get()
         threshold = self.reid_threshold_var.get()
+        use_cosine = self.distance_metric_var.get() == "cosine"
         
         # Update all trackers with new settings
         for camera_id, tracker in self.trackers.items():
             tracker.periodic_reid_enabled = enabled
             tracker.periodic_reid_interval = interval
             tracker.reid_failure_threshold = threshold
+            tracker.set_distance_metric(use_cosine)
         
-        self.log_message(f"Updated Re-ID settings: Enabled={enabled}, Interval={interval}s, Switch Threshold={threshold}")
+        self.log_message(f"Updated Re-ID settings: Enabled={enabled}, Interval={interval}s, "
+                         f"Switch Threshold={threshold}, Distance Metric={'Cosine' if use_cosine else 'Euclidean'}")
 
     def add_camera(self):
         """Add a new camera based on the camera_var entry"""
