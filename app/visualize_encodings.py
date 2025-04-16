@@ -152,7 +152,7 @@ def visualize_encodings_pca(encodings, names, title="PCA of Face Encodings"):
     plt.suptitle(f"Total Explained Variance: {total_var:.2%}", y=0.92)
     
     plt.tight_layout()
-    plt.savefig("face_encodings_pca.png")
+    # plt.savefig("face_encodings_pca.png")
     plt.show()
 
 def calculate_distance(vector1, vector2, metric='euclidean'):
@@ -215,7 +215,7 @@ def plot_distance_histogram(intra_distances, inter_distances, title, metric='euc
     plt.xlabel(f'{metric.capitalize()} Distance')
     plt.ylabel('Frequency')
     plt.legend()
-    plt.savefig(f"distance_distribution_{metric}.png")
+    # plt.savefig(f"distance_distribution_{metric}.png")
     plt.tight_layout()
 
 def main():

@@ -41,13 +41,9 @@ class PersonTracker:
         # Set distance metric for feature comparison
         self.use_cosine_distance = False  # Default is Euclidean, set to True for cosine
         
-        # Default thresholds for Euclidean distance
-        self.feature_threshold = 0.6  # More lenient threshold for known people
-        self.reidentification_threshold = 0.8
-        
-        # Reserve cosine thresholds (will be used when switching metrics)
-        self.cosine_feature_threshold = 0.2  # Cosine equivalent of feature threshold
-        self.cosine_reidentification_threshold = 0.3  # Cosine equivalent of reidentification threshold
+        # Single similarity threshold (used for both feature matching and re-identification)
+        self.similarity_threshold = 0.6  # Default threshold for Euclidean distance
+        self.cosine_similarity_threshold = 0.2  # Default threshold for cosine distance
         
         # Periodic re-identification settings
         self.periodic_reid_enabled = True  # Enable periodic re-identification
@@ -271,69 +267,60 @@ class PersonTracker:
         return avg_feature
 
     def _find_best_face_match(self, face_feature, current_time):
-        """Find best match with improved matching logic based on face_recognition library"""
+        """Find best match with improved matching logic based on selected distance metric"""
         best_match_id = -1
         best_match_name = "UNK"
         min_distance = float('inf')
         
         # --- FIRST CHECK: Match with known people ---
-        # Flatten all known encodings and names for direct comparison
-        all_known_encodings = []
-        all_known_names = []
-        
+        # Check each known person individually
         for name, data in self.known_people.items():
             for known_feature in data['features']:
-                all_known_encodings.append(known_feature)
-                all_known_names.append(name)
-        
-        if all_known_encodings:  # Only try matching if we have known faces
-            # Calculate all distances at once (more efficient)
-            face_distances = face_recognition.face_distance(all_known_encodings, face_feature)
-            print(f"Face distances: {face_distances}")
-            
-            # Check if any match is below threshold
-            if len(face_distances) > 0 and min(face_distances) < self.feature_threshold:
-                best_idx = face_distances.argmin()
-                min_distance = face_distances[best_idx]
-                best_match_name = all_known_names[best_idx]
-                print(f"Found match for known person {best_match_name} with distance {min_distance:.4f}")
+                # Calculate distance using selected metric
+                distance = self._calculate_feature_distance(known_feature, face_feature)
+                print(f"Distance to {name}: {distance:.4f}")
                 
-                # Look for existing track with this name to maintain duration
-                for track_id, track_data in self.tracked_objects.items():
-                    if track_data.get('name') == best_match_name and track_data.get('active', False):
-                        best_match_id = track_id
-                        break
+                # Update best match if this is better
+                if distance < min_distance and distance < self.similarity_threshold:
+                    min_distance = distance
+                    best_match_name = name
+        
+        # If we found a match with a known person
+        if best_match_name != "UNK":
+            print(f"Found match for known person {best_match_name} with distance {min_distance:.4f}")
+            
+            # Look for existing track with this name to maintain duration
+            for track_id, track_data in self.tracked_objects.items():
+                if track_data.get('name') == best_match_name and track_data.get('active', False):
+                    best_match_id = track_id
+                    break
 
         # --- SECOND CHECK: If no known person match, try recent tracks ---
         if best_match_id == -1 and best_match_name == "UNK":
-            # Collect all recent faces from face database
-            recent_faces = []
-            recent_ids = []
-            
+            # Check each track individually
             for track_id, track_data in self.face_database.items():
+                # Skip tracks that are too old
                 if current_time - track_data['last_seen'] > self.reid_time_window:
                     continue
                 
                 # Get the best feature for this track
+                track_feature = None
                 if track_id in self.feature_history and len(self.feature_history[track_id]) > 0:
                     # Use average of recent features
-                    avg_feature = np.mean(self.feature_history[track_id], axis=0)
-                    recent_faces.append(avg_feature)
+                    track_feature = np.mean(self.feature_history[track_id], axis=0)
                 elif 'feature' in track_data:
-                    recent_faces.append(track_data['feature'])
+                    track_feature = track_data['feature']
                 else:
                     continue
                 
-                recent_ids.append(track_id)
-            
-            # If we have recent faces, compare with them
-            if recent_faces:
-                face_distances = face_recognition.face_distance(recent_faces, face_feature)
+                # Calculate distance using selected metric
+                distance = self._calculate_feature_distance(track_feature, face_feature)
                 
-                if len(face_distances) > 0 and min(face_distances) < self.reidentification_threshold:
-                    best_idx = face_distances.argmin()
-                    min_distance = face_distances[best_idx]
-                    best_match_id = recent_ids[best_idx]
+                # Update best match if this is better
+                if distance < min_distance and distance < self.similarity_threshold:
+                    min_distance = distance
+                    best_match_id = track_id
+                    best_match_name = self.tracked_objects.get(track_id, {}).get('name', 'UNK')
                     print(f"Re-identified track {best_match_id} with distance {min_distance:.4f}")
 
         return best_match_id, best_match_name, min_distance
@@ -1079,45 +1066,71 @@ class PersonTracker:
         if self.use_cosine_distance == use_cosine:
             return
             
+        # Swap thresholds before changing metric
+        current_threshold = self.similarity_threshold
+        self.similarity_threshold = self.cosine_similarity_threshold
+        self.cosine_similarity_threshold = current_threshold
+            
         # Switch the distance metric
         self.use_cosine_distance = use_cosine
         
-        # Swap the thresholds based on the selected metric
-        if use_cosine:
-            # Store current Euclidean thresholds
-            euclidean_feature = self.feature_threshold
-            euclidean_reid = self.reidentification_threshold
+        # Log the change
+        metric_name = 'cosine' if use_cosine else 'Euclidean'
+        print(f"Switched to {metric_name} distance (threshold: {self.similarity_threshold})")
             
-            # Set cosine thresholds
-            self.feature_threshold = self.cosine_feature_threshold
-            self.reidentification_threshold = self.cosine_reidentification_threshold
-            
-            # Store old Euclidean thresholds for future switching
-            self.cosine_feature_threshold = euclidean_feature
-            self.cosine_reidentification_threshold = euclidean_reid
-            
-            print(f"Switched to cosine distance (thresholds: feature={self.feature_threshold}, reid={self.reidentification_threshold})")
-        else:
-            # Store current cosine thresholds
-            cosine_feature = self.feature_threshold
-            cosine_reid = self.reidentification_threshold
-            
-            # Set Euclidean thresholds
-            self.feature_threshold = self.cosine_feature_threshold
-            self.reidentification_threshold = self.cosine_reidentification_threshold
-            
-            # Store old cosine thresholds for future switching
-            self.cosine_feature_threshold = cosine_feature
-            self.cosine_reidentification_threshold = cosine_reid
-            
-            print(f"Switched to Euclidean distance (thresholds: feature={self.feature_threshold}, reid={self.reidentification_threshold})")
-            
-        # Return the new thresholds for confirmation
+        # Return the new threshold for confirmation
         return {
-            'feature_threshold': self.feature_threshold,
-            'reidentification_threshold': self.reidentification_threshold,
+            'similarity_threshold': self.similarity_threshold,
             'metric': 'cosine' if self.use_cosine_distance else 'euclidean'
         }
+
+        # Feature threshold settings
+        feature_frame = ttk.Frame(self.reid_frame)
+        feature_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(feature_frame, text="Similarity Threshold:").pack(side=tk.LEFT)
+        
+        self.similarity_threshold_var = tk.DoubleVar(value=0.6)
+        self.similarity_threshold_spinbox = ttk.Spinbox(
+            feature_frame,
+            from_=0.1,
+            to=1.0,
+            increment=0.05,
+            textvariable=self.similarity_threshold_var,
+            width=5
+        )
+        self.similarity_threshold_spinbox.pack(side=tk.RIGHT)
+        
+        # Remove Re-ID threshold settings as we're using a single threshold
+
+    def update_reid_settings(self):
+        """Update Re-ID settings for all trackers"""
+        # Get current values from UI
+        enabled = self.reid_enabled_var.get()
+        interval = self.reid_interval_var.get()
+        switch_threshold = self.reid_threshold_var.get()
+        similarity_threshold = self.similarity_threshold_var.get()
+        use_cosine = self.distance_metric_var.get() == "cosine"
+        
+        # Update all trackers with new settings
+        for camera_id, tracker in self.trackers.items():
+            tracker.periodic_reid_enabled = enabled
+            tracker.periodic_reid_interval = interval
+            tracker.reid_failure_threshold = switch_threshold
+            
+            # Update threshold based on selected metric
+            if use_cosine:
+                tracker.cosine_similarity_threshold = similarity_threshold
+            else:
+                tracker.similarity_threshold = similarity_threshold
+            
+            # Set distance metric (this will apply the appropriate thresholds)
+            tracker.set_distance_metric(use_cosine)
+        
+        self.log_message(
+            f"Updated Re-ID settings: Enabled={enabled}, Interval={interval}s, "
+            f"Switch Threshold={switch_threshold}, Similarity Threshold={similarity_threshold:.2f}, "
+            f"Distance Metric={'Cosine' if use_cosine else 'Euclidean'}"
+        )
 
 class CameraManager:
     def __init__(self, camera_ids=None):
@@ -1417,30 +1430,52 @@ class PeopleTrackingGUI:
         self.enable_reid_check.pack(pady=5, fill=tk.X)
         
         # Re-ID Interval (seconds)
-        ttk.Label(self.reid_frame, text="Re-ID Interval (seconds):").pack(anchor='w', padx=5)
+        interval_frame = ttk.Frame(self.reid_frame)
+        interval_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(interval_frame, text="Re-ID Interval (seconds):").pack(side=tk.LEFT)
+        
         self.reid_interval_var = tk.DoubleVar(value=5.0)
-        self.reid_interval_scale = ttk.Scale(
-            self.reid_frame, 
+        self.reid_interval_spinbox = ttk.Spinbox(
+            interval_frame, 
             from_=1.0, 
-            to=15.0, 
-            variable=self.reid_interval_var, 
-            orient=tk.HORIZONTAL
+            to=30.0, 
+            increment=0.5,
+            textvariable=self.reid_interval_var,
+            width=5
         )
-        self.reid_interval_scale.pack(fill=tk.X, padx=5, pady=5)
-        ttk.Label(self.reid_frame, textvariable=self.reid_interval_var).pack(anchor='e', padx=5)
+        self.reid_interval_spinbox.pack(side=tk.RIGHT)
         
         # Identity Switch Threshold
-        ttk.Label(self.reid_frame, text="Identity Switch Threshold:").pack(anchor='w', padx=5)
+        threshold_frame = ttk.Frame(self.reid_frame)
+        threshold_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(threshold_frame, text="Identity Switch Threshold:").pack(side=tk.LEFT)
+        
         self.reid_threshold_var = tk.IntVar(value=3)
-        self.reid_threshold_scale = ttk.Scale(
-            self.reid_frame, 
+        self.reid_threshold_spinbox = ttk.Spinbox(
+            threshold_frame, 
             from_=1, 
-            to=5, 
-            variable=self.reid_threshold_var, 
-            orient=tk.HORIZONTAL
+            to=10, 
+            increment=1,
+            textvariable=self.reid_threshold_var,
+            width=5
         )
-        self.reid_threshold_scale.pack(fill=tk.X, padx=5, pady=5)
-        ttk.Label(self.reid_frame, textvariable=self.reid_threshold_var).pack(anchor='e', padx=5)
+        self.reid_threshold_spinbox.pack(side=tk.RIGHT)
+        
+        # Similarity threshold
+        similarity_frame = ttk.Frame(self.reid_frame)
+        similarity_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(similarity_frame, text="Similarity Threshold:").pack(side=tk.LEFT)
+        
+        self.similarity_threshold_var = tk.DoubleVar(value=0.6)
+        self.similarity_threshold_spinbox = ttk.Spinbox(
+            similarity_frame,
+            from_=0.1,
+            to=1.0,
+            increment=0.05,
+            textvariable=self.similarity_threshold_var,
+            width=5
+        )
+        self.similarity_threshold_spinbox.pack(side=tk.RIGHT)
         
         # Distance Metric selection
         ttk.Label(self.reid_frame, text="Distance Metric:").pack(anchor='w', padx=5, pady=(5, 0))
@@ -1542,18 +1577,30 @@ class PeopleTrackingGUI:
         # Get current values from UI
         enabled = self.reid_enabled_var.get()
         interval = self.reid_interval_var.get()
-        threshold = self.reid_threshold_var.get()
+        switch_threshold = self.reid_threshold_var.get()
+        similarity_threshold = self.similarity_threshold_var.get()
         use_cosine = self.distance_metric_var.get() == "cosine"
         
         # Update all trackers with new settings
         for camera_id, tracker in self.trackers.items():
             tracker.periodic_reid_enabled = enabled
             tracker.periodic_reid_interval = interval
-            tracker.reid_failure_threshold = threshold
+            tracker.reid_failure_threshold = switch_threshold
+            
+            # Update threshold based on selected metric
+            if use_cosine:
+                tracker.cosine_similarity_threshold = similarity_threshold
+            else:
+                tracker.similarity_threshold = similarity_threshold
+            
+            # Set distance metric (this will apply the appropriate thresholds)
             tracker.set_distance_metric(use_cosine)
         
-        self.log_message(f"Updated Re-ID settings: Enabled={enabled}, Interval={interval}s, "
-                         f"Switch Threshold={threshold}, Distance Metric={'Cosine' if use_cosine else 'Euclidean'}")
+        self.log_message(
+            f"Updated Re-ID settings: Enabled={enabled}, Interval={interval}s, "
+            f"Switch Threshold={switch_threshold}, Similarity Threshold={similarity_threshold:.2f}, "
+            f"Distance Metric={'Cosine' if use_cosine else 'Euclidean'}"
+        )
 
     def add_camera(self):
         """Add a new camera based on the camera_var entry"""
