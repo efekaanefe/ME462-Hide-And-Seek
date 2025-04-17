@@ -2510,21 +2510,74 @@ class PeopleTrackingGUI:
 
     
     def on_close(self):
-        """Handle window closing"""
-        self.log_message("Close button clicked. Shutting down...")
-        # Stop tracking first
-        if self.is_tracking:
-            self.stop_tracking() # This now handles stopping cameras and joining threads
-        
-        # Ensure all cameras are released (belt-and-suspenders)
-        # self.camera_manager.stop_all_cameras() # Already called in stop_tracking
-        
-        self.log_message("Destroying GUI window.")
-        # Close the window
+        """Cleanup function to call when the application is closing"""
+        self.stop_tracking()
+        if self.camera_manager:
+            self.camera_manager.stop_all_cameras()
         self.window.destroy()
 
+    def extract_time_data(self):
+        """Extract and save detection time data to a CSV file"""
+        if not hasattr(self, 'trackers') or not self.trackers:
+            self.log_message("No tracking data available to extract")
+            return
+        
+        # Get time data from all trackers
+        all_data = []
+        for camera_id, tracker in self.trackers.items():
+            time_data = tracker.get_time_data()
+            for item in time_data:
+                # Add camera_id to each record
+                item['camera_id'] = camera_id
+                all_data.append(item)
+        
+        if not all_data:
+            self.log_message("No tracking data available to extract")
+            return
+        
+        # Ask user for save location
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Save Tracking Data"
+        )
+        
+        if not file_path:
+            return  # User cancelled
+        
+        try:
+            # Determine all possible fields from the data
+            all_fields = set()
+            for item in all_data:
+                all_fields.update(item.keys())
+            
+            # Define field order (important fields first)
+            ordered_fields = [
+                'camera_id', 'id', 'name', 'track_ids', 'status', 
+                'first_seen', 'last_seen', 'duration', 'duration_seconds',
+                'is_known'
+            ]
+            
+            # Add any remaining fields
+            remaining_fields = list(all_fields - set(ordered_fields))
+            field_names = ordered_fields + remaining_fields
+            
+            # Write to CSV
+            with open(file_path, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=field_names)
+                writer.writeheader()
+                for item in all_data:
+                    # Ensure all fields exist in each row
+                    row = {field: item.get(field, '') for field in field_names}
+                    writer.writerow(row)
+            
+            self.log_message(f"Tracking data exported to {file_path}")
+        
+        except Exception as e:
+            self.log_message(f"Error exporting data: {str(e)}")
+
     def _format_duration(self, seconds):
-        """Formats seconds into hours:minutes:seconds format"""
+        """Format seconds into HH:MM:SS"""
         minutes, seconds = divmod(int(seconds), 60)
         hours, minutes = divmod(minutes, 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
