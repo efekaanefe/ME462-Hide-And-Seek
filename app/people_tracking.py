@@ -34,68 +34,63 @@ except ImportError:
 
 
 class PersonTracker:
+    """Multi-person tracker with face re-identification and optical flow tracking"""
+
     def __init__(self):
-        self.next_id = 1
-        self.tracked_objects = {}  # Active/inactive tracks
-        self.face_database = {}  # Permanent storage: {id: {'feature': feature_vector, 'last_seen': timestamp}}
-        self.disappear_threshold = 2.0
-        self.reid_time_window = 100.0  # Very long to effectively keep all tracks for re-id
-        self.iou_threshold = 0.4  # Minimum IoU for matching consideration
+        # Initialize tracking variables
+        self.tracked_objects = {}  # Dictionary of tracked objects
+        self.unidentified_tracks = {}  # Temporary tracks waiting for face extraction
+        self.next_id = 0  # Next ID to assign
+        self.temp_id_counter = 0  # For temporary IDs
+        self.frame_count = 0  # Count processed frames
         
-        # Set distance metric for feature comparison
-        self.use_cosine_distance = True  # Default is Euclidean, set to True for cosine
+        # Re-ID Configuration
+        self.face_detector = None  # Will be initialized lazily
+        self.feature_database = {}  # Known face features
+        self.known_people_files = {}  # Mapping of known people to their image files
+        self.face_detection_interval = 5  # Process faces every N frames
+        self.min_face_detection_interval = 0.5  # Minimum seconds between face detections
+        self.last_face_detection_time = 0  # Last time face detection was run
+        self.reid_threshold = 0.6  # Maximum feature distance for positive ID match
+        self.confirmation_threshold = 5  # Higher = more checks before confirming ID
+        self.reid_failure_threshold = 3  # Higher = more failures to trigger ID switch alert
+        self.reid_interval = 3.0  # Seconds between re-ID checks
+        self.feature_history = {}  # Track feature history for better matching
+        self.reid_failure_counts = {}  # Track ID switches for detection
+        self.last_reid_checks = {}  # Last time re-ID was run for each track
+        self.reid_queue = []  # Queue tracks for re-ID
+        self.known_people_tracks = {}  # Map known people names to their track IDs
+        self.time_data = {}  # Track duration data for each tracked person
+        self.disappear_threshold = 1.0  # Time (seconds) until track is marked inactive
+        self.reid_stats = {
+            'total_reid_attempts': 0,
+            'identity_switches': 0,
+            'identity_confirmations': 0,
+            'newly_identified': 0,
+        }
         
-        # Single similarity threshold (used for both feature matching and re-identification)
-        self.similarity_threshold = 0.55  # Default threshold for Euclidean distance
-        self.cosine_similarity_threshold = 0.06  # Default threshold for cosine distance
+        # Face recognition settings
+        self.face_size = (224, 224)  # Target size for face extraction
         
-        # Periodic re-identification settings
-        self.periodic_reid_enabled = True  # Enable periodic re-identification
-        self.periodic_reid_interval = 1.0  # Seconds between re-identification checks
-        self.last_reid_checks = {}  # Track last re-identification time for each track
-        self.reid_failure_threshold = 1  # Number of failed re-IDs before considering identity switch
-        self.reid_failure_counts = {}  # Count re-ID failures for each track
+        # Motion prediction
+        self.use_motion_prediction = False
+        self.velocity_history = {}  # Track velocities for motion prediction
         
-        # Track identity changes history
-        self.identity_changes = {}  # {track_id: [{'time': timestamp, 'from': old_name, 'to': new_name}]}
-        self.reid_events = {}  # {track_id: [{'time': timestamp, 'result': success/failure}]}
+        # Tracking optimization
+        self.face_database = {}  # Features of tracks
+        self.feature_pool = {}  # Pre-compute features for similar images
         
-        # Known people database
-        self.known_people_dir = "known_people"
-        self.known_people = {}  # {name: {'features': [feature_vectors], 'images': [image_paths]}}
-        # New: Track mapping for known people
-        self.known_people_tracks = {}  # {name: [track_ids]}
-        self.load_known_people()
+        # Appearance matching
+        self.use_appearance = True
+        self.appearance_weight = 0.3  # Weight for appearance in matching (1-this for IoU)
         
-        # Add total_active_time to separate from elapsed time
-        self.time_data = {}  # {id: {'first_seen': timestamp, 'last_seen': timestamp, 
-                            #       'total_active_time': seconds, 'active_intervals': [(start, end), ...]}
-        
-        # New structure to temporarily track unidentified people (no face detected yet)
-        self.unidentified_tracks = {}  # {temp_id: {'bbox': bbox, 'first_seen': timestamp, 'last_seen': timestamp}}
-        self.temp_id_counter = 1  # Counter for temporary IDs
-        
-        # New: Add feature history for more stable identification
-        self.feature_history = {}  # {id: [list of recent features]}
-        self.max_feature_history = 5  # Keep last 5 features for each ID
-        
-        # Add performance settings
-        self.face_detection_interval = 5  # Only run face detection every N frames
-        self.frame_count = 0
-        self.last_face_detection_time = 0
-        self.min_face_detection_interval = 0.5  # Minimum seconds between full face detections
-        
-        # Motion prediction parameters
-        self.velocity_history = {}  # {id: [list of recent velocity vectors]}
-        self.max_velocity_history = 3  # Keep last 3 velocity measurements
-        self.use_motion_prediction = True  # Enable motion prediction for better tracking
-        
-        # Initialize optical flow tracker
-        self.use_optical_flow = True  # Enable optical flow tracking
+        # Optical flow tracking
+        self.use_optical_flow = True
         self.optical_flow_tracker = OpticalFlowTracker()
+        self.prev_frame = None
         
-        if model is None:
-             print("WARNING: YOLO model not available. Face re-identification will be disabled.")
+        # Distance metric (Euclidean or Cosine)
+        self.use_cosine_distance = False  # True for cosine, False for Euclidean
 
     def load_known_people(self):
         """Load known people with improved feature extraction"""
@@ -837,8 +832,8 @@ class PersonTracker:
             # Store a copy of the tracks before optical flow update
             prev_frame_tracks = copy.deepcopy(self.tracked_objects)
             
-            # Update tracks using optical flow
-            updated_tracks = self.optical_flow_tracker.update_tracks(self.prev_frame, frame, self.tracked_objects)
+            # Update tracks using optical flow - note that the optical flow tracker maintains its own previous frame
+            updated_tracks = self.optical_flow_tracker.update_tracks(frame, self.tracked_objects)
             
             # Update tracked objects with optical flow results
             for track_id, track_data in updated_tracks.items():
@@ -847,7 +842,7 @@ class PersonTracker:
                     # Mark as updated by optical flow
                     self.tracked_objects[track_id]['optical_flow_updated'] = True
         
-        # Store current frame for next optical flow update
+        # Store current frame for next optical flow update - this is for the PersonTracker's own use
         self.prev_frame = frame.copy()
         
         # --- STEP 2: Match new detections with updated tracks using Hungarian algorithm ---
