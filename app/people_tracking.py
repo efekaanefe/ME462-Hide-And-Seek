@@ -68,6 +68,18 @@ class PersonTracker:
             'identity_confirmations': 0,
             'newly_identified': 0,
         }
+        # Track identity changes and re-ID events
+        self.identity_changes = {}  # {track_id: [{'time': timestamp, 'from': old_name, 'to': new_name}]}
+        self.reid_events = {}  # {track_id: [{'time': timestamp, 'result': success/failure}]}
+        
+        # Similarity thresholds for different distance metrics
+        self.similarity_threshold = 0.6  # Default for Euclidean
+        self.cosine_similarity_threshold = 0.06  # Default for cosine
+        self.iou_threshold = 0.4  # Minimum IoU for matching consideration
+        
+        # Re-ID configuration
+        self.periodic_reid_enabled = True  # Enable periodic re-identification
+        self.periodic_reid_interval = 1.0  # Seconds between re-identification checks
         
         # Face recognition settings
         self.face_size = (224, 224)  # Target size for face extraction
@@ -75,6 +87,7 @@ class PersonTracker:
         # Motion prediction
         self.use_motion_prediction = False
         self.velocity_history = {}  # Track velocities for motion prediction
+        self.max_velocity_history = 3  # Keep last 3 velocity measurements
         
         # Tracking optimization
         self.face_database = {}  # Features of tracks
@@ -88,6 +101,7 @@ class PersonTracker:
         self.use_optical_flow = True
         self.optical_flow_tracker = OpticalFlowTracker()
         self.prev_frame = None
+        self.optical_flow_points = {}  # Dictionary of points to track for each object
         
         # Distance metric (Euclidean or Cosine)
         self.use_cosine_distance = False  # True for cosine, False for Euclidean
