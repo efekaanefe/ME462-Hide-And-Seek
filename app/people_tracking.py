@@ -35,21 +35,21 @@ class PersonTracker:
         self.tracked_objects = {}  # Active/inactive tracks
         self.face_database = {}  # Permanent storage: {id: {'feature': feature_vector, 'last_seen': timestamp}}
         self.disappear_threshold = 2.0
-        self.reid_time_window = 1000.0  # Very long to effectively keep all tracks for re-id
-        self.iou_threshold = 0.3  # Minimum IoU for matching consideration
+        self.reid_time_window = 100.0  # Very long to effectively keep all tracks for re-id
+        self.iou_threshold = 0.4  # Minimum IoU for matching consideration
         
         # Set distance metric for feature comparison
-        self.use_cosine_distance = False  # Default is Euclidean, set to True for cosine
+        self.use_cosine_distance = True  # Default is Euclidean, set to True for cosine
         
         # Single similarity threshold (used for both feature matching and re-identification)
-        self.similarity_threshold = 0.6  # Default threshold for Euclidean distance
-        self.cosine_similarity_threshold = 0.2  # Default threshold for cosine distance
+        self.similarity_threshold = 0.55  # Default threshold for Euclidean distance
+        self.cosine_similarity_threshold = 0.06  # Default threshold for cosine distance
         
         # Periodic re-identification settings
         self.periodic_reid_enabled = True  # Enable periodic re-identification
-        self.periodic_reid_interval = 5.0  # Seconds between re-identification checks
+        self.periodic_reid_interval = 1.0  # Seconds between re-identification checks
         self.last_reid_checks = {}  # Track last re-identification time for each track
-        self.reid_failure_threshold = 3  # Number of failed re-IDs before considering identity switch
+        self.reid_failure_threshold = 1  # Number of failed re-IDs before considering identity switch
         self.reid_failure_counts = {}  # Count re-ID failures for each track
         
         # Track identity changes history
@@ -76,7 +76,7 @@ class PersonTracker:
         self.max_feature_history = 5  # Keep last 5 features for each ID
         
         # Add performance settings
-        self.face_detection_interval = 10  # Only run face detection every N frames
+        self.face_detection_interval = 5  # Only run face detection every N frames
         self.frame_count = 0
         self.last_face_detection_time = 0
         self.min_face_detection_interval = 0.5  # Minimum seconds between full face detections
