@@ -1997,9 +1997,10 @@ class PeopleTrackingGUI:
                     
                     # STEP 3: Draw results (on a copy)
                     frame_copy = frame.copy()
-                    # Set camera_id attribute for optical flow visualization
-                    frame_copy.camera_id = camera_id
-                    # Pass camera_id explicitly as a parameter
+                    # Don't try to set attribute on NumPy array - it can fail
+                    # frame_copy.camera_id = camera_id
+                    
+                    # Pass camera_id explicitly as a parameter instead
                     result_frame = self.draw_results(frame_copy, tracked_objects, camera_id=camera_id)
                     
                     # Track statistics
