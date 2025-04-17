@@ -2365,71 +2365,93 @@ class PeopleTrackingGUI:
         """Draw bounding boxes and labels on the frame"""
         result = frame.copy()
         
-        for obj in tracked_objects:
-            # Extract information
-            track_id = obj.get('id', 'unknown')
-            bbox = obj.get('bbox')
-            name = obj.get('name', '')
-            is_temp = obj.get('is_temp', True)
-            confidence = obj.get('confidence', 0)
-            recently_reid = obj.get('recently_reid', False)
-            
-            if bbox is None:
+        # Check the format of tracked_objects and adapt accordingly
+        if hasattr(tracked_objects, 'values') and callable(getattr(tracked_objects, 'values')):
+            # tracked_objects is a dictionary, iterate through values
+            objects_to_draw = tracked_objects.values()
+        elif isinstance(tracked_objects, (list, tuple)):
+            # tracked_objects is already a list or tuple
+            objects_to_draw = tracked_objects
+        else:
+            # Unexpected format, log and return the original frame
+            self.log_message(f"Error: Unexpected tracked_objects format: {type(tracked_objects)}")
+            return result
+        
+        for obj in objects_to_draw:
+            try:
+                # Check if obj is a dictionary or supports get method
+                if not hasattr(obj, 'get') or not callable(getattr(obj, 'get')):
+                    # Skip if not a dictionary-like object
+                    continue
+                
+                # Extract information
+                track_id = obj.get('id', 'unknown')
+                bbox = obj.get('bbox')
+                name = obj.get('name', '')
+                is_temp = obj.get('is_temp', True)
+                confidence = obj.get('confidence', 0)
+                recently_reid = obj.get('recently_reid', False)
+                
+                if bbox is None:
+                    continue
+                    
+                x1, y1, x2, y2 = bbox
+                
+                # Choose color based on ID (temporary tracks are lighter)
+                if is_temp:
+                    # Temporary track - use lighter color
+                    color = (200, 200, 200)  # Light gray
+                else:
+                    # Permanent track - use color based on track_id hash
+                    color_id = hash(str(track_id)) % 10
+                    colors = [
+                        (0, 0, 255),    # Red
+                        (0, 255, 0),    # Green
+                        (255, 0, 0),    # Blue
+                        (0, 255, 255),  # Yellow
+                        (255, 0, 255),  # Magenta
+                        (255, 255, 0),  # Cyan
+                        (128, 0, 255),  # Purple
+                        (0, 128, 255),  # Orange
+                        (255, 128, 0),  # Light Blue
+                        (128, 255, 0),  # Light Green
+                    ]
+                    color = colors[color_id]
+                
+                # Draw bounding box
+                cv2.rectangle(result, (x1, y1), (x2, y2), color, 2)
+                
+                # Prepare label with ID and name if available
+                if name:
+                    label = f"{track_id}: {name} ({confidence:.2f})"
+                else:
+                    label = f"{track_id} ({confidence:.2f})"
+                    
+                # Get text size for background rectangle
+                text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                
+                # Draw background rectangle for text
+                cv2.rectangle(result, (x1, y1 - 25), 
+                             (x1 + text_size[0] + 10, y1), 
+                             color, -1)  # Filled background
+                
+                # Draw text with black color for better contrast
+                cv2.putText(result, label, (x1 + 5, y1 - 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+                           
+                # Draw indicator on top of the box for recently re-identified
+                if recently_reid:
+                    # Draw a small circle on top of the box
+                    center_x = x1 + (x2 - x1) // 2
+                    cv2.circle(result, (center_x, y1 - 20), 8, (255, 255, 0), -1)  # Filled cyan circle
+                    
+                    # Draw Re-ID text inside circle
+                    cv2.putText(result, "R", (center_x - 4, y1 - 17), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+            except Exception as e:
+                # Log the specific error for debugging
+                self.log_message(f"Error drawing object: {str(e)}")
                 continue
-                
-            x1, y1, x2, y2 = bbox
-            
-            # Choose color based on ID (temporary tracks are lighter)
-            if is_temp:
-                # Temporary track - use lighter color
-                color = (200, 200, 200)  # Light gray
-            else:
-                # Permanent track - use color based on track_id hash
-                color_id = hash(str(track_id)) % 10
-                colors = [
-                    (0, 0, 255),    # Red
-                    (0, 255, 0),    # Green
-                    (255, 0, 0),    # Blue
-                    (0, 255, 255),  # Yellow
-                    (255, 0, 255),  # Magenta
-                    (255, 255, 0),  # Cyan
-                    (128, 0, 255),  # Purple
-                    (0, 128, 255),  # Orange
-                    (255, 128, 0),  # Light Blue
-                    (128, 255, 0),  # Light Green
-                ]
-                color = colors[color_id]
-            
-            # Draw bounding box
-            cv2.rectangle(result, (x1, y1), (x2, y2), color, 2)
-            
-            # Prepare label with ID and name if available
-            if name:
-                label = f"{track_id}: {name} ({confidence:.2f})"
-            else:
-                label = f"{track_id} ({confidence:.2f})"
-                
-            # Get text size for background rectangle
-            text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-            
-            # Draw background rectangle for text
-            cv2.rectangle(result, (x1, y1 - 25), 
-                         (x1 + text_size[0] + 10, y1), 
-                         color, -1)  # Filled background
-            
-            # Draw text with black color for better contrast
-            cv2.putText(result, label, (x1 + 5, y1 - 5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-                       
-            # Draw indicator on top of the box for recently re-identified
-            if recently_reid:
-                # Draw a small circle on top of the box
-                center_x = x1 + (x2 - x1) // 2
-                cv2.circle(result, (center_x, y1 - 20), 8, (255, 255, 0), -1)  # Filled cyan circle
-                
-                # Draw Re-ID text inside circle
-                cv2.putText(result, "R", (center_x - 4, y1 - 17), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         
         # Add optical flow visualization if available
         # First try to get camera_id from parameter, then from frame attribute if available
