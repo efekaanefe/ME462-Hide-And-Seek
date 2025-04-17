@@ -1999,7 +1999,8 @@ class PeopleTrackingGUI:
                     frame_copy = frame.copy()
                     # Set camera_id attribute for optical flow visualization
                     frame_copy.camera_id = camera_id
-                    result_frame = self.draw_results(frame_copy, tracked_objects)
+                    # Pass camera_id explicitly as a parameter
+                    result_frame = self.draw_results(frame_copy, tracked_objects, camera_id=camera_id)
                     
                     # Track statistics
                     active_count = sum(1 for obj in tracked_objects.values() if obj.get('active', False))
@@ -2359,109 +2360,59 @@ class PeopleTrackingGUI:
         
         return detections
     
-    def draw_results(self, frame, tracked_objects):
-        """Draw bounding boxes and labels with duration for tracked objects"""
+    def draw_results(self, frame, tracked_objects, camera_id=None):
+        """Draw bounding boxes and labels on the frame"""
         result = frame.copy()
-        current_time = time.time()
         
-        # Draw all tracked objects
-        for obj_id, obj_data in tracked_objects.items():
-            if not obj_data.get('active', True):
-                continue # Don't draw inactive tracks
-
-            x1, y1, x2, y2 = map(int, obj_data['bbox'])
+        for obj in tracked_objects:
+            # Extract information
+            track_id = obj.get('id', 'unknown')
+            bbox = obj.get('bbox')
+            name = obj.get('name', '')
+            is_temp = obj.get('is_temp', True)
+            confidence = obj.get('confidence', 0)
+            recently_reid = obj.get('recently_reid', False)
             
-            # Check if this is a temporary track (awaiting face detection)
-            is_temporary = obj_data.get('is_temporary', False)
-            name = obj_data.get('name', 'UNK')
+            if bbox is None:
+                continue
+                
+            x1, y1, x2, y2 = bbox
             
-            # Check if this track was recently re-identified
-            recently_reid = False
-            reid_time = None
-            
-            # For permanent tracks, check if a re-ID happened in the last second
-            if not is_temporary and not isinstance(obj_id, str):
-                for tracker in self.trackers.values():
-                    if obj_id in tracker.last_reid_checks:
-                        reid_time = tracker.last_reid_checks[obj_id]
-                        recently_reid = (current_time - reid_time) < 1.0  # Show indicator for 1 second
-                        break
-            
-            # Calculate duration
-            if is_temporary:
-                if 'first_seen' in obj_data:
-                    duration = current_time - obj_data['first_seen']
-                    duration_str = self._format_duration(duration)
-                else:
-                    duration_str = "00:00:00"
-                    
-                # Yellow color for temporary tracks
-                color = (0, 255, 255)  # Yellow in BGR
-                label = f"Waiting... ({duration_str})"
+            # Choose color based on ID (temporary tracks are lighter)
+            if is_temp:
+                # Temporary track - use lighter color
+                color = (200, 200, 200)  # Light gray
             else:
-                # For regular tracks, find the time data in tracker
-                if isinstance(obj_id, str):
-                    # This is a temp ID with no time data yet
-                    duration_str = "00:00:00"
-                else:
-                    # For regular tracks, check all cameras for time data
-                    camera_ids = list(self.trackers.keys())
-                    for camera_id in camera_ids:
-                        if obj_id in self.trackers[camera_id].time_data:
-                            time_data = self.trackers[camera_id].time_data[obj_id]
-                            # Calculate current duration from intervals
-                            total_duration = time_data.get('total_active_time', 0)
-                            
-                            # Add duration of current active interval if exists
-                            intervals = time_data.get('active_intervals', [])
-                            if intervals and intervals[-1][1] is None:
-                                current_interval = current_time - intervals[-1][0]
-                                total_duration += current_interval
-                                
-                            duration_str = self._format_duration(total_duration)
-                            break
-                    else:
-                        duration_str = "00:00:00"
-                
-                # Regular track color based on identification
-                if name == "UNK":
-                    # Orange for unknown but detected faces
-                    color = (0, 165, 255)  # Orange in BGR
-                    label = f"#{obj_id} ({duration_str})"
-                else:
-                    # Green for known people
-                    color = (0, 255, 0)  # Green in BGR
-                    label = f"{name} ({duration_str})"
-                
-                # Change color if recently re-identified
-                if recently_reid:
-                    # Bright cyan for recently re-identified tracks
-                    color = (255, 255, 0)  # Cyan in BGR
-                    
-                    # Add "Re-ID" to the label
-                    if reid_time:
-                        time_since_reid = current_time - reid_time
-                        label = f"{label} [Re-ID: {time_since_reid:.1f}s ago]"
-                    else:
-                        label = f"{label} [Re-ID]"
-                    
-                    # Check if this track has had identity switches
-                    for tracker in self.trackers.values():
-                        if obj_id in tracker.reid_failure_counts and tracker.reid_failure_counts[obj_id] > 0:
-                            # Add warning for potential identity confusion
-                            label += f" [Switch Confidence: {tracker.reid_failure_counts[obj_id]}/{tracker.reid_failure_threshold}]"
-                            break
-
-            # Draw box with thickness proportional to box size
-            thickness = max(1, min(3, int((x2-x1) / 200 + 1)))
+                # Permanent track - use color based on track_id hash
+                color_id = hash(str(track_id)) % 10
+                colors = [
+                    (0, 0, 255),    # Red
+                    (0, 255, 0),    # Green
+                    (255, 0, 0),    # Blue
+                    (0, 255, 255),  # Yellow
+                    (255, 0, 255),  # Magenta
+                    (255, 255, 0),  # Cyan
+                    (128, 0, 255),  # Purple
+                    (0, 128, 255),  # Orange
+                    (255, 128, 0),  # Light Blue
+                    (128, 255, 0),  # Light Green
+                ]
+                color = colors[color_id]
             
-            # Draw the bounding box
-            cv2.rectangle(result, (x1, y1), (x2, y2), color, thickness)
+            # Draw bounding box
+            cv2.rectangle(result, (x1, y1), (x2, y2), color, 2)
             
-            # Calculate label position (above the box)
+            # Prepare label with ID and name if available
+            if name:
+                label = f"{track_id}: {name} ({confidence:.2f})"
+            else:
+                label = f"{track_id} ({confidence:.2f})"
+                
+            # Get text size for background rectangle
             text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-            cv2.rectangle(result, 
-                         (x1, y1 - text_size[1] - 10), 
+            
+            # Draw background rectangle for text
+            cv2.rectangle(result, (x1, y1 - 25), 
                          (x1 + text_size[0] + 10, y1), 
                          color, -1)  # Filled background
             
@@ -2480,11 +2431,14 @@ class PeopleTrackingGUI:
                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         
         # Add optical flow visualization if available
-        if hasattr(frame, 'camera_id'):
-            camera_id = frame.camera_id
-            if camera_id in self.trackers and self.trackers[camera_id].use_optical_flow:
-                # Draw the optical flow points
-                result = self.trackers[camera_id].optical_flow_tracker.draw_flow(result)
+        # First try to get camera_id from parameter, then from frame attribute if available
+        frame_camera_id = camera_id
+        if frame_camera_id is None and hasattr(frame, 'camera_id'):
+            frame_camera_id = frame.camera_id
+            
+        if frame_camera_id is not None and frame_camera_id in self.trackers and self.trackers[frame_camera_id].use_optical_flow:
+            # Draw the optical flow points
+            result = self.trackers[frame_camera_id].optical_flow_tracker.draw_flow(result)
         
         return result
     
