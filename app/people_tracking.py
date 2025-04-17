@@ -18,6 +18,9 @@ import dlib
 import face_recognition  # This uses dlib internally with a more convenient API
 from scipy.optimize import linear_sum_assignment  # Added for Hungarian Algorithm
 
+# Import the optical flow tracker
+from optical_flow_tracking import OpticalFlowTracker
+
 # Check if CUDA is available
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -85,6 +88,10 @@ class PersonTracker:
         self.velocity_history = {}  # {id: [list of recent velocity vectors]}
         self.max_velocity_history = 3  # Keep last 3 velocity measurements
         self.use_motion_prediction = True  # Enable motion prediction for better tracking
+        
+        # Initialize optical flow tracker
+        self.use_optical_flow = True  # Enable optical flow tracking
+        self.optical_flow_tracker = OpticalFlowTracker()
         
         if model is None:
              print("WARNING: YOLO model not available. Face re-identification will be disabled.")
@@ -635,88 +642,224 @@ class PersonTracker:
         
         return identity_changed
 
+    def _generate_bbox_tracking_points(self, frame, bbox, max_points=10):
+        """Generate points within a bounding box for optical flow tracking"""
+        x1, y1, x2, y2 = map(int, bbox)
+        
+        # Ensure coordinates are within frame boundaries
+        height, width = frame.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(width, x2), min(height, y2)
+        
+        # Skip if bbox is too small
+        if (x2 - x1) < 10 or (y2 - y1) < 10:
+            return []
+        
+        # Get ROI
+        roi = frame[y1:y2, x1:x2]
+        
+        # Convert to grayscale
+        if len(roi.shape) == 3:
+            roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        else:
+            roi_gray = roi
+        
+        # Find good features to track
+        points = cv2.goodFeaturesToTrack(
+            roi_gray,
+            maxCorners=max_points,
+            qualityLevel=0.3,
+            minDistance=7,
+            blockSize=7
+        )
+        
+        if points is None:
+            return []
+        
+        # Convert points to global frame coordinates
+        global_points = []
+        for point in points:
+            x, y = point.ravel()
+            global_points.append([x + x1, y + y1])  # Adjust to global coordinates
+            
+        return np.array(global_points, dtype=np.float32).reshape(-1, 1, 2)
+    
+    def _track_with_optical_flow(self, prev_frame, current_frame, tracks):
+        """Track points using optical flow between frames"""
+        # Convert frames to grayscale
+        if len(prev_frame.shape) == 3:
+            prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+        else:
+            prev_gray = prev_frame
+            
+        if len(current_frame.shape) == 3:
+            current_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+        else:
+            current_gray = current_frame
+        
+        # Process each track
+        updated_tracks = {}
+        
+        for track_id, track_data in tracks.items():
+            # Skip inactive tracks
+            if not track_data.get('active', False):
+                continue
+            
+            bbox = track_data['bbox']
+            
+            # If no tracking points for this track, initialize them
+            if track_id not in self.optical_flow_points or len(self.optical_flow_points[track_id]) == 0:
+                points = self._generate_bbox_tracking_points(
+                    prev_frame, 
+                    bbox, 
+                    self.max_optical_flow_points
+                )
+                
+                if len(points) == 0:
+                    continue
+                    
+                self.optical_flow_points[track_id] = points
+                updated_tracks[track_id] = track_data.copy()
+                continue
+            
+            # Calculate optical flow
+            points = self.optical_flow_points[track_id]
+            new_points, status, error = cv2.calcOpticalFlowPyrLK(
+                prev_gray, 
+                current_gray, 
+                points, 
+                None, 
+                **self.optical_flow_params
+            )
+            
+            # Keep only valid points
+            good_new = new_points[status == 1]
+            good_old = points[status == 1]
+            
+            # If too few points remain, regenerate tracking points next time
+            if len(good_new) < 4:  # Need at least 4 points for good tracking
+                self.optical_flow_points[track_id] = np.array([], dtype=np.float32).reshape(0, 1, 2)
+                updated_tracks[track_id] = track_data.copy()
+                continue
+                
+            # Calculate the shift
+            dx_list = []
+            dy_list = []
+            for i, (new, old) in enumerate(zip(good_new, good_old)):
+                nx, ny = new.ravel()
+                ox, oy = old.ravel()
+                dx_list.append(nx - ox)
+                dy_list.append(ny - oy)
+            
+            # Filter out outliers using median
+            dx_median = np.median(dx_list)
+            dy_median = np.median(dy_list)
+            
+            # Update bbox using median shift
+            x1, y1, x2, y2 = bbox
+            new_bbox = (
+                int(x1 + dx_median),
+                int(y1 + dy_median),
+                int(x2 + dx_median),
+                int(y2 + dy_median)
+            )
+            
+            # Ensure bbox is within frame
+            height, width = current_frame.shape[:2]
+            new_x1 = max(0, min(width-1, new_bbox[0]))
+            new_y1 = max(0, min(height-1, new_bbox[1]))
+            new_x2 = max(new_x1+10, min(width, new_bbox[2]))
+            new_y2 = max(new_y1+10, min(height, new_bbox[3]))
+            
+            # Create updated track data
+            updated_track_data = track_data.copy()
+            updated_track_data['bbox'] = (new_x1, new_y1, new_x2, new_y2)
+            
+            # Update tracking points for next frame
+            self.optical_flow_points[track_id] = good_new.reshape(-1, 1, 2)
+            
+            # Store updated track
+            updated_tracks[track_id] = updated_track_data
+        
+        return updated_tracks
+    
     def update(self, frame, detections, current_time=None):
         """Update tracks with performance optimizations and Hungarian matching algorithm."""
         if current_time is None:
             current_time = time.time()
-        
-        # Track frame count for skipping face detection
+            
         self.frame_count += 1
-        should_detect_faces = (self.frame_count % self.face_detection_interval == 0) and \
-                               (current_time - self.last_face_detection_time >= self.min_face_detection_interval)
+        should_detect_faces = (self.frame_count % self.face_detection_interval == 0 and 
+                               (current_time - self.last_face_detection_time) >= self.min_face_detection_interval)
         
-        active_objects = {}
+        # --- STEP 1: Use optical flow to update existing tracks ---
+        if self.use_optical_flow:
+            updated_tracks = self.optical_flow_tracker.update_tracks(frame, self.tracked_objects)
+            
+            # Update tracked objects with optical flow results
+            for track_id, track_data in updated_tracks.items():
+                self.tracked_objects[track_id] = track_data
+        
+        # --- STEP 2: Match new detections with updated tracks using Hungarian algorithm ---
+        active_tracks = {k: v for k, v in self.tracked_objects.items() if v.get('active', False)}
+        matches, unmatched_tracks, unmatched_detections = self._hungarian_match_iou_appearance(
+            frame, active_tracks, detections, current_time
+        )
+        
+        # Mark tracks matched by bounding boxes (for reporting)
         matched_track_ids = set()
         matched_detection_indices = set()
+        newly_detected_indices = set()
         
-        # --- STEP 1: Match active permanent tracks using enhanced Hungarian algorithm ---
-        active_permanent_tracks = {id: data for id, data in self.tracked_objects.items() 
-                                 if data.get('active', True) and not isinstance(id, str)}
-        
-        if active_permanent_tracks and detections:
-            # Apply enhanced Hungarian algorithm that uses both IoU and appearance
-            matches, unmatched_tracks, unmatched_detections = self._hungarian_match_iou_appearance(
-                frame, active_permanent_tracks, detections, current_time
-            )
+        # --- STEP 3: Update matched tracks ---
+        for track_id, det_idx in matches:
+            # Mark track as matched
+            matched_track_ids.add(track_id)
+            matched_detection_indices.add(det_idx)
             
-            # Process matches
-            for track_id, det_idx in matches:
-                # Update track with matched detection
-                bbox = detections[det_idx]['bbox']
-                prev_bbox = self.tracked_objects[track_id]['bbox']
-                
-                # Calculate time delta for velocity update
-                prev_time = self.tracked_objects[track_id].get('prev_time', current_time)
-                dt = current_time - prev_time
-                
-                # Update track data
-                self.tracked_objects[track_id]['bbox'] = bbox
-                self.tracked_objects[track_id]['last_seen'] = current_time
-                
-                # Update velocity estimation
-                if dt > 0:
-                    velocity = self._update_velocity(track_id, bbox, dt)
-                    if velocity:
-                        self.tracked_objects[track_id]['velocity'] = velocity
-                
-                # Ensure time tracking continues
-                if track_id in self.time_data:
-                    self.time_data[track_id]['last_seen'] = current_time
-                    intervals = self.time_data[track_id]['active_intervals']
-                    if not intervals or intervals[-1][1] is not None:
-                        intervals.append([current_time, None])
-                
-                # --- NEW: Periodic Re-identification Check ---
-                if self._should_perform_reid(track_id, current_time):
-                    # Extract face feature for re-identification
-                    face_feature = self._extract_face_feature(frame, bbox)
-                    self._handle_reid_result(track_id, face_feature, current_time)
-                
-                matched_track_ids.add(track_id)
-                matched_detection_indices.add(det_idx)
+            # Get detection details
+            det_bbox = detections[det_idx]['bbox']
             
-            # Save unmatched detections for face detection step
-            newly_detected_indices = set(unmatched_detections)
-        else:
-            # If no active tracks or detections, all detections are new
-            newly_detected_indices = set(range(len(detections)))
+            # Update track data
+            self.tracked_objects[track_id]['bbox'] = det_bbox
+            self.tracked_objects[track_id]['last_seen'] = current_time
+            self.tracked_objects[track_id]['active'] = True
+            
+            # Update time tracking
+            if track_id in self.time_data:
+                self.time_data[track_id]['last_seen'] = current_time
+                # If track was inactive, start a new interval
+                intervals = self.time_data[track_id]['active_intervals']
+                if not intervals or intervals[-1][1] is not None:
+                    intervals.append([current_time, None])
+                
+            # Update velocity for motion prediction
+            if self.use_motion_prediction and 'prev_bbox' in self.tracked_objects[track_id]:
+                self._update_velocity(track_id, det_bbox, current_time - self.tracked_objects[track_id].get('prev_time', current_time))
+                
+            # Store current state for next update
+            self.tracked_objects[track_id]['prev_bbox'] = det_bbox
+            self.tracked_objects[track_id]['prev_time'] = current_time
+            
+            # Periodic re-identification if enabled
+            if should_detect_faces and self._should_perform_reid(track_id, current_time):
+                face_feature = self._extract_face_feature(frame, det_bbox)
+                identity_changed = self._handle_reid_result(track_id, face_feature, current_time)
         
-        # --- STEP 2: Process remaining detections with face detection (only on some frames) ---
+        # --- STEP 4: Process remaining detections with face detection (only on some frames) ---
         if should_detect_faces:
             self.last_face_detection_time = current_time
             
-            for det_idx in list(newly_detected_indices):
-                if det_idx in matched_detection_indices:
-                    continue  # Skip already matched detections
-                    
+            for det_idx in unmatched_detections:
                 bbox = detections[det_idx]['bbox']
                 face_feature = self._extract_face_feature(frame, bbox)
                 
                 if face_feature is not None:
                     best_match_id, name, min_distance = self._find_best_face_match(face_feature, current_time)
                     
+                    # Case 1: Found match with an existing track
                     if best_match_id != -1:
-                        # Update existing track
+                        # Update existing track (even inactive ones)
                         self.tracked_objects[best_match_id]['bbox'] = bbox
                         self.tracked_objects[best_match_id]['last_seen'] = current_time
                         self.tracked_objects[best_match_id]['active'] = True
@@ -730,8 +873,11 @@ class PersonTracker:
                         
                         # Update feature history and database
                         avg_feature = self._update_feature_history(best_match_id, face_feature)
-                        self.face_database[best_match_id]['feature'] = avg_feature
-                        self.face_database[best_match_id]['last_seen'] = current_time
+                        self.face_database[best_match_id] = {
+                            'feature': avg_feature,
+                            'first_seen': self.tracked_objects[best_match_id].get('first_seen', current_time),
+                            'last_seen': current_time
+                        }
                         
                         # Ensure time tracking continues
                         if best_match_id in self.time_data:
@@ -742,8 +888,9 @@ class PersonTracker:
                         
                         matched_track_ids.add(best_match_id)
                         matched_detection_indices.add(det_idx)
+                    
+                    # Case 2: Create new track
                     else:
-                        # Create new track
                         new_id = self.next_id
                         self.next_id += 1
                         
@@ -760,7 +907,7 @@ class PersonTracker:
                             if name not in self.known_people_tracks:
                                 self.known_people_tracks[name] = []
                             self.known_people_tracks[name].append(new_id)
-                            print(f"New track {new_id} created for known person {name} (Total tracks: {len(self.known_people_tracks[name])})")
+                            print(f"New track {new_id} created for known person {name}")
                         
                         # Initialize feature history and database
                         self._update_feature_history(new_id, face_feature)
@@ -780,56 +927,92 @@ class PersonTracker:
                         
                         matched_track_ids.add(new_id)
                         matched_detection_indices.add(det_idx)
+                        
+                        print(f"Created new track {new_id} with name {name}")
         
-        # Create temporary tracks for remaining detections (without face detection)
-        matched_temp_ids = set()
-        for det_idx in range(len(detections)):
+        # --- STEP 5: Handle unmatched detections that weren't processed for face detection ---
+        for det_idx in unmatched_detections:
             if det_idx in matched_detection_indices:
-                continue  # Skip already matched detections
+                continue  # Skip already processed detections
                 
-            bbox = detections[det_idx]['bbox']
+            # Create a temporary track
             temp_id = f"temp_{self.temp_id_counter}"
             self.temp_id_counter += 1
             
             self.unidentified_tracks[temp_id] = {
-                'bbox': bbox,
+                'bbox': detections[det_idx]['bbox'],
                 'first_seen': current_time,
-                'last_seen': current_time
+                'last_seen': current_time,
+                'frame_count': 1  # Count frames to decide when to convert to real track
             }
-            matched_temp_ids.add(temp_id)
         
-        # --- Update status of existing tracks ---
-        for obj_id in list(self.tracked_objects.keys()):
-            if obj_id not in matched_track_ids:
-                if self.tracked_objects[obj_id].get('active', True):
-                    if current_time - self.tracked_objects[obj_id]['last_seen'] > self.disappear_threshold:
-                        self.tracked_objects[obj_id]['active'] = False
-                        
-                        # Close the active interval
-                        if obj_id in self.time_data:
-                            intervals = self.time_data[obj_id]['active_intervals']
-                            if intervals and intervals[-1][1] is None:
-                                intervals[-1][1] = current_time
-                                interval_duration = current_time - intervals[-1][0]
-                                self.time_data[obj_id]['total_active_time'] += interval_duration
-                                self.time_data[obj_id]['last_seen'] = current_time
+        # --- STEP 6: Process temporary (unidentified) tracks ---
+        temp_ids_to_remove = []
+        for temp_id, track_data in self.unidentified_tracks.items():
+            # Skip if already handled as part of detection matching
+            if temp_id in matched_track_ids:
+                continue
+                
+            # Check if we've seen this temp track enough times to promote it
+            if track_data.get('frame_count', 0) >= 3:  # Require at least 3 frames of consistency
+                # Promote to real track
+                new_id = self.next_id
+                self.next_id += 1
+                
+                self.tracked_objects[new_id] = {
+                    'bbox': track_data['bbox'],
+                    'first_seen': track_data['first_seen'],
+                    'last_seen': current_time,
+                    'active': True,
+                    'name': 'UNK'  # Unknown until face is detected
+                }
+                
+                # Initialize time tracking for the new real track
+                self.time_data[new_id] = {
+                    'first_seen': track_data['first_seen'],
+                    'last_seen': current_time,
+                    'total_active_time': 0,
+                    'active_intervals': [[track_data['first_seen'], None]]
+                }
+                
+                # Mark for removal
+                temp_ids_to_remove.append(temp_id)
+                
+                print(f"Promoted temporary track {temp_id} to real track {new_id}")
+            
+            else:
+                # Mark as inactive if not seen for a while
+                if current_time - track_data['last_seen'] > self.disappear_threshold:
+                    temp_ids_to_remove.append(temp_id)
         
-        # Update temporary tracks
-        for temp_id in list(self.unidentified_tracks.keys()):
-            if temp_id not in matched_temp_ids:
-                if current_time - self.unidentified_tracks[temp_id]['last_seen'] > self.disappear_threshold:
-                    # Remove temporary track if disappeared
-                    del self.unidentified_tracks[temp_id]
+        # Remove processed temporary tracks
+        for temp_id in temp_ids_to_remove:
+            self.unidentified_tracks.pop(temp_id, None)
         
-        # Return combined tracks for visualization
-        combined_tracks = self.tracked_objects.copy()
-        for temp_id, temp_data in self.unidentified_tracks.items():
-            temp_track = temp_data.copy()
-            temp_track['is_temporary'] = True
-            temp_track['active'] = True
-            combined_tracks[temp_id] = temp_track
+        # --- STEP 7: Handle unmatched real tracks ---
+        for track_id in unmatched_tracks:
+            # If using optical flow and track was updated, consider it still active
+            if self.use_optical_flow and self.tracked_objects[track_id].get('optical_flow_updated', False):
+                self.tracked_objects[track_id]['optical_flow_updated'] = False  # Reset flag
+                continue
+                
+            # If track is inactive for too long, close its active interval
+            if current_time - self.tracked_objects[track_id]['last_seen'] > self.disappear_threshold:
+                self.tracked_objects[track_id]['active'] = False
+                
+                # Close the active interval in time tracking
+                if track_id in self.time_data:
+                    intervals = self.time_data[track_id]['active_intervals']
+                    if intervals and intervals[-1][1] is None:
+                        intervals[-1][1] = self.tracked_objects[track_id]['last_seen']
+                        # Update total active time
+                        total_time = sum(end - start for start, end in 
+                                        [(s, e if e is not None else current_time) 
+                                        for s, e in intervals])
+                        self.time_data[track_id]['total_active_time'] = total_time
         
-        return combined_tracks
+        # Return all currently tracked objects (active and inactive)
+        return self.tracked_objects
     
     def get_time_data(self):
         """Get time data for all tracked objects with consolidated known people information"""
@@ -1813,7 +1996,10 @@ class PeopleTrackingGUI:
                     tracking_results[camera_id] = tracked_objects
                     
                     # STEP 3: Draw results (on a copy)
-                    result_frame = self.draw_results(frame.copy(), tracked_objects)
+                    frame_copy = frame.copy()
+                    # Set camera_id attribute for optical flow visualization
+                    frame_copy.camera_id = camera_id
+                    result_frame = self.draw_results(frame_copy, tracked_objects)
                     
                     # Track statistics
                     active_count = sum(1 for obj in tracked_objects.values() if obj.get('active', False))
@@ -2293,239 +2479,14 @@ class PeopleTrackingGUI:
                 cv2.putText(result, "R", (center_x - 4, y1 - 17), 
                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         
+        # Add optical flow visualization if available
+        if hasattr(frame, 'camera_id'):
+            camera_id = frame.camera_id
+            if camera_id in self.trackers and self.trackers[camera_id].use_optical_flow:
+                # Draw the optical flow points
+                result = self.trackers[camera_id].optical_flow_tracker.draw_flow(result)
+        
         return result
-    
-    def display_frame(self, camera_id, frame):
-        """Display a frame on the appropriate canvas"""
-        if camera_id not in self.camera_canvases:
-            # print(f"Canvas for camera {camera_id} not found for display.")
-            return # Canvas might have been removed
-            
-        canvas = self.camera_canvases[camera_id]
-        canvas_width = canvas.winfo_width()
-        canvas_height = canvas.winfo_height()
-        
-        # If canvas dimensions are invalid (e.g., during init), use default or skip
-        if canvas_width <= 1 or canvas_height <= 1:
-             # print(f"Canvas {camera_id} not ready for display (width={canvas_width}, height={canvas_height})")
-             return
-        
-        try:
-        # Calculate aspect ratio preserving resize
-            frame_height, frame_width = frame.shape[:2]
-            if frame_width == 0 or frame_height == 0: return # Skip empty frame
-
-            scale = min(canvas_width / frame_width, canvas_height / frame_height)
-            new_width = int(frame_width * scale)
-            new_height = int(frame_height * scale)
-        
-            # Resize frame smoothly
-            resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
-        
-            # Convert BGR to RGB for PIL -> Tkinter
-            img = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
-            img_pil = Image.fromarray(img)
-            photo = ImageTk.PhotoImage(image=img_pil)
-        
-            # Store reference to prevent garbage collection (!IMPORTANT!)
-            self.camera_photos[camera_id] = photo
-        
-            # Display on canvas (center image)
-            # canvas.delete("all") # Clear previous image
-            # canvas.create_image(canvas_width // 2, canvas_height // 2, image=photo, anchor=tk.CENTER)
-
-            # More efficient update: find existing image item and update its data
-            img_item = canvas.find_withtag("frame_img")
-            if img_item:
-                canvas.itemconfig(img_item, image=photo)
-            else:
-                canvas.create_image(canvas_width // 2, canvas_height // 2, image=photo, anchor=tk.CENTER, tags="frame_img")
-
-
-        except Exception as e:
-            self.log_message(f"Error displaying frame for camera {camera_id}: {e}")
-
-    
-    def extract_time_data(self):
-        """Extract time data for all tracked people in a hierarchical structure"""
-        try:
-            # Collect raw time data from all trackers
-            raw_data = {}  # {camera_id: tracker_data}
-            for camera_id, tracker in self.trackers.items():
-                try:
-                    camera_data = tracker.get_time_data()
-                    raw_data[camera_id] = camera_data
-                except Exception as e:
-                    self.log_message(f"Error getting time data from tracker for camera {camera_id}: {e}")
-            
-            if not raw_data:
-                messagebox.showinfo("Info", "No tracking data available to export.")
-                return
-            
-            # Create hierarchical structure
-            structured_data = {
-                "known_people": {},
-                "unknown_people": [],
-                "identity_changes": {},  # New section for tracking identity changes
-                "reid_events": {}       # New section for re-ID events
-            }
-            
-            # Process all cameras' data
-            for camera_id, camera_data in raw_data.items():
-                # Process known people first
-                known_entries = [entry for entry in camera_data if entry.get('is_known', False)]
-                for entry in known_entries:
-                    name = entry['name']
-                    if name not in structured_data["known_people"]:
-                        structured_data["known_people"][name] = {
-                            "total_duration": entry['duration'],
-                            "total_duration_seconds": entry['duration_seconds'],
-                            "first_seen": entry['first_seen'],
-                            "last_seen": entry['last_seen'],
-                            "tracks": []
-                        }
-                    
-                    # Get track details for this person
-                    tracker = self.trackers[camera_id]
-                    for track_id in entry['track_ids']:
-                        if track_id in tracker.time_data:
-                            track_data = tracker.time_data[track_id]
-                            intervals = track_data['active_intervals']
-                            
-                            # Process each interval as a separate track entry
-                            for interval in intervals:
-                                start_time = datetime.fromtimestamp(interval[0]).strftime("%Y-%m-%d %H:%M:%S")
-                                # Handle ongoing tracks
-                                if interval[1] is None:
-                                    end_time = "ongoing"
-                                    duration_seconds = time.time() - interval[0]
-                                else:
-                                    end_time = datetime.fromtimestamp(interval[1]).strftime("%Y-%m-%d %H:%M:%S")
-                                    duration_seconds = interval[1] - interval[0]
-                                
-                                track_entry = {
-                                    "camera": camera_id,
-                                    "track_id": track_id,
-                                    "track_start": start_time,
-                                    "track_end": end_time,
-                                    "duration": self._format_duration(duration_seconds)
-                                }
-                                structured_data["known_people"][name]["tracks"].append(track_entry)
-                        
-                        # Add identity changes for this track if any
-                        if track_id in tracker.identity_changes and tracker.identity_changes[track_id]:
-                            changes = tracker.identity_changes[track_id]
-                            for change in changes:
-                                change_copy = change.copy()
-                                change_copy['time'] = datetime.fromtimestamp(change['time']).strftime("%Y-%m-%d %H:%M:%S")
-                                
-                                # Add to identity changes
-                                if str(track_id) not in structured_data["identity_changes"]:
-                                    structured_data["identity_changes"][str(track_id)] = []
-                                
-                                change_copy['camera'] = camera_id
-                                structured_data["identity_changes"][str(track_id)].append(change_copy)
-                        
-                        # Add re-ID events for this track if any
-                        if track_id in tracker.reid_events and tracker.reid_events[track_id]:
-                            events = tracker.reid_events[track_id]
-                            for event in events:
-                                event_copy = event.copy()
-                                event_copy['time'] = datetime.fromtimestamp(event['time']).strftime("%Y-%m-%d %H:%M:%S")
-                                
-                                # Add to re-ID events
-                                if str(track_id) not in structured_data["reid_events"]:
-                                    structured_data["reid_events"][str(track_id)] = []
-                                
-                                event_copy['camera'] = camera_id
-                                structured_data["reid_events"][str(track_id)].append(event_copy)
-                
-                # Process unknown people
-                unknown_entries = [entry for entry in camera_data if not entry.get('is_known', False)]
-                for entry in unknown_entries:
-                    track_id = entry['id']
-                    if track_id in tracker.time_data:
-                        track_data = tracker.time_data[track_id]
-                        intervals = track_data['active_intervals']
-                        
-                        for interval in intervals:
-                            start_time = datetime.fromtimestamp(interval[0]).strftime("%Y-%m-%d %H:%M:%S")
-                            if interval[1] is None:
-                                end_time = "ongoing"
-                                duration_seconds = time.time() - interval[0]
-                            else:
-                                end_time = datetime.fromtimestamp(interval[1]).strftime("%Y-%m-%d %H:%M:%S")
-                                duration_seconds = interval[1] - interval[0]
-                            
-                            unknown_entry = {
-                                "id": track_id,
-                                "camera": camera_id,
-                                "track_start": start_time,
-                                "track_end": end_time,
-                                "duration": self._format_duration(duration_seconds),
-                                "total_duration": entry['duration']
-                            }
-                            structured_data["unknown_people"].append(unknown_entry)
-                        
-                        # Add identity changes for unknown tracks too
-                        if track_id in tracker.identity_changes and tracker.identity_changes[track_id]:
-                            changes = tracker.identity_changes[track_id]
-                            for change in changes:
-                                change_copy = change.copy()
-                                change_copy['time'] = datetime.fromtimestamp(change['time']).strftime("%Y-%m-%d %H:%M:%S")
-                                
-                                # Add to identity changes
-                                if str(track_id) not in structured_data["identity_changes"]:
-                                    structured_data["identity_changes"][str(track_id)] = []
-                                
-                                change_copy['camera'] = camera_id
-                                structured_data["identity_changes"][str(track_id)].append(change_copy)
-            
-            # Ask user for save location
-            file_path = filedialog.asksaveasfilename(
-                defaultextension=".json",
-                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-                title="Save Tracking Time Data As"
-            )
-            
-            if not file_path:
-                return  # User cancelled
-            
-            # Write to JSON file
-            with open(file_path, 'w', encoding='utf-8') as jsonfile:
-                json.dump(structured_data, jsonfile, indent=4)
-            
-            self.log_message(f"Time data exported to {file_path}")
-            
-            # Display summary in log
-            self.log_message("\nTracking Summary:")
-            for name, person_data in structured_data["known_people"].items():
-                self.log_message(f"\nKnown Person: {name}")
-                self.log_message(f"  Total Duration: {person_data['total_duration']}")
-                self.log_message(f"  First Seen: {person_data['first_seen']}")
-                self.log_message(f"  Last Seen: {person_data['last_seen']}")
-                self.log_message("  Tracks:")
-                for track in person_data["tracks"]:
-                    self.log_message(f"    Camera {track['camera']}: {track['track_start']} -> {track['track_end']} ({track['duration']})")
-            
-            if structured_data["unknown_people"]:
-                self.log_message("\nUnknown Tracks:")
-                for track in structured_data["unknown_people"]:
-                    self.log_message(f"  ID {track['id']} (Camera {track['camera']}): {track['track_start']} -> {track['track_end']} ({track['duration']})")
-            
-            # Log identity changes
-            if structured_data["identity_changes"]:
-                self.log_message("\nIdentity Changes:")
-                for track_id, changes in structured_data["identity_changes"].items():
-                    self.log_message(f"  Track {track_id}:")
-                    for change in changes:
-                        self.log_message(f"    {change['time']}: {change['from']} → {change['to']} ({change['reason']})")
-            
-            messagebox.showinfo("Success", f"Time data successfully exported to\n{file_path}")
-            
-        except Exception as e:
-            self.log_message(f"Error exporting time data: {str(e)}")
-            messagebox.showerror("Error", f"Failed to export time data: {str(e)}")
     
     def log_message(self, message):
         """Add a message to the log with timestamp (thread-safe using schedule)"""
