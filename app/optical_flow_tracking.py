@@ -9,6 +9,7 @@ class OpticalFlowTracker:
         self.prev_frame = None
         self.prev_gray = None
         self.optical_flow_points = {}  # {track_id: [points to track]}
+        self.flow_lines = []  # Store flow lines for visualization
         self.max_optical_flow_points = 10  # Maximum number of points to track per object
         self.optical_flow_params = dict(
             winSize=(15, 15),
@@ -21,6 +22,7 @@ class OpticalFlowTracker:
         self.prev_frame = None
         self.prev_gray = None
         self.optical_flow_points = {}
+        self.flow_lines = []
         
     def _generate_bbox_tracking_points(self, frame, bbox, max_points=10):
         """Generate points within a bounding box for optical flow tracking"""
@@ -66,6 +68,9 @@ class OpticalFlowTracker:
     
     def update_tracks(self, current_frame, tracks):
         """Track points using optical flow between frames"""
+        # Clear previous flow lines
+        self.flow_lines = []
+        
         # If no previous frame, just store this one and return original tracks
         if self.prev_frame is None:
             self.prev_frame = current_frame.copy()
@@ -136,6 +141,13 @@ class OpticalFlowTracker:
                 ox, oy = old.ravel()
                 dx_list.append(nx - ox)
                 dy_list.append(ny - oy)
+                
+                # Store flow lines for visualization (limit to avoid clutter)
+                if len(self.flow_lines) < 100:
+                    self.flow_lines.append((
+                        (int(ox), int(oy)),  # old point
+                        (int(nx), int(ny))   # new point
+                    ))
             
             # Filter out outliers using median
             dx_median = np.median(dx_list)
@@ -178,6 +190,18 @@ class OpticalFlowTracker:
         """Draw optical flow points and vectors for visualization"""
         vis_frame = frame.copy()
         
+        # Draw flow vectors as arrows
+        for start_point, end_point in self.flow_lines:
+            cv2.arrowedLine(
+                vis_frame, 
+                start_point, 
+                end_point, 
+                (0, 255, 0),  # Green color
+                1,            # Line thickness
+                tipLength=0.3  # Length of arrow tip
+            )
+        
+        # Draw tracking points
         for track_id, points in self.optical_flow_points.items():
             # Draw points
             for point in points:

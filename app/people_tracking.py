@@ -17,6 +17,7 @@ from ultralytics import YOLO
 import dlib
 import face_recognition  # This uses dlib internally with a more convenient API
 from scipy.optimize import linear_sum_assignment  # Added for Hungarian Algorithm
+import copy
 
 # Import the optical flow tracker
 from optical_flow_tracking import OpticalFlowTracker
@@ -685,8 +686,11 @@ class PersonTracker:
         return np.array(global_points, dtype=np.float32).reshape(-1, 1, 2)
     
     def _track_with_optical_flow(self, prev_frame, current_frame, tracks):
-        """Track points using optical flow between frames"""
-        # Convert frames to grayscale
+        """Track features using optical flow between frames"""
+        if prev_frame is None or current_frame is None:
+            return tracks.copy()  # Can't calculate flow without both frames
+            
+        # Convert frames to grayscale for optical flow
         if len(prev_frame.shape) == 3:
             prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
         else:
@@ -750,6 +754,13 @@ class PersonTracker:
                 ox, oy = old.ravel()
                 dx_list.append(nx - ox)
                 dy_list.append(ny - oy)
+                
+                # Store paired points for visualization
+                if len(self.flow_lines) < 100:  # Limit number of lines to avoid clutter
+                    self.flow_lines.append((
+                        (int(ox), int(oy)),  # old point
+                        (int(nx), int(ny))   # new point
+                    ))
             
             # Filter out outliers using median
             dx_median = np.median(dx_list)
@@ -774,6 +785,7 @@ class PersonTracker:
             # Create updated track data
             updated_track_data = track_data.copy()
             updated_track_data['bbox'] = (new_x1, new_y1, new_x2, new_y2)
+            updated_track_data['optical_flow_updated'] = True
             
             # Update tracking points for next frame
             self.optical_flow_points[track_id] = good_new.reshape(-1, 1, 2)
@@ -782,6 +794,33 @@ class PersonTracker:
             updated_tracks[track_id] = updated_track_data
         
         return updated_tracks
+    
+    def update_tracks(self, prev_frame, current_frame, tracks):
+        """Update track positions using optical flow"""
+        # Clear previous flow lines for visualization
+        self.flow_lines = []
+        
+        # Use optical flow to update track positions
+        updated_tracks = self._track_with_optical_flow(prev_frame, current_frame, tracks)
+        
+        return updated_tracks
+    
+    def draw_flow(self, frame):
+        """Draw optical flow visualization on the frame"""
+        result = frame.copy()
+        
+        # Draw the optical flow lines
+        for start_point, end_point in self.flow_lines:
+            cv2.arrowedLine(
+                result, 
+                start_point, 
+                end_point, 
+                (0, 255, 0),  # Green color
+                1,            # Line thickness
+                tipLength=0.3  # Length of arrow tip
+            )
+        
+        return result
     
     def update(self, frame, detections, current_time=None):
         """Update tracks with performance optimizations and Hungarian matching algorithm."""
@@ -793,12 +832,23 @@ class PersonTracker:
                                (current_time - self.last_face_detection_time) >= self.min_face_detection_interval)
         
         # --- STEP 1: Use optical flow to update existing tracks ---
-        if self.use_optical_flow:
-            updated_tracks = self.optical_flow_tracker.update_tracks(frame, self.tracked_objects)
+        prev_frame_tracks = None
+        if self.use_optical_flow and hasattr(self, 'prev_frame') and self.prev_frame is not None:
+            # Store a copy of the tracks before optical flow update
+            prev_frame_tracks = copy.deepcopy(self.tracked_objects)
+            
+            # Update tracks using optical flow
+            updated_tracks = self.optical_flow_tracker.update_tracks(self.prev_frame, frame, self.tracked_objects)
             
             # Update tracked objects with optical flow results
             for track_id, track_data in updated_tracks.items():
-                self.tracked_objects[track_id] = track_data
+                if track_id in self.tracked_objects:
+                    self.tracked_objects[track_id] = track_data
+                    # Mark as updated by optical flow
+                    self.tracked_objects[track_id]['optical_flow_updated'] = True
+        
+        # Store current frame for next optical flow update
+        self.prev_frame = frame.copy()
         
         # --- STEP 2: Match new detections with updated tracks using Hungarian algorithm ---
         active_tracks = {k: v for k, v in self.tracked_objects.items() if v.get('active', False)}
@@ -902,12 +952,15 @@ class PersonTracker:
                             'name': name
                         }
                         
+                        # Log when we create a new track
+                        if name != "UNK":
+                            print(f"New track {new_id} created for known person {name}")
+                        
                         # Update known people tracks mapping for new track
                         if name != "UNK":
                             if name not in self.known_people_tracks:
                                 self.known_people_tracks[name] = []
                             self.known_people_tracks[name].append(new_id)
-                            print(f"New track {new_id} created for known person {name}")
                         
                         # Initialize feature history and database
                         self._update_feature_history(new_id, face_feature)
@@ -928,6 +981,7 @@ class PersonTracker:
                         matched_track_ids.add(new_id)
                         matched_detection_indices.add(det_idx)
                         
+                        self.reid_stats['newly_identified'] += 1
                         print(f"Created new track {new_id} with name {name}")
         
         # --- STEP 5: Handle unmatched detections that weren't processed for face detection ---
@@ -943,7 +997,8 @@ class PersonTracker:
                 'bbox': detections[det_idx]['bbox'],
                 'first_seen': current_time,
                 'last_seen': current_time,
-                'frame_count': 1  # Count frames to decide when to convert to real track
+                'frame_count': 1,  # Count frames to decide when to convert to real track
+                'active': True
             }
         
         # --- STEP 6: Process temporary (unidentified) tracks ---
@@ -990,14 +1045,18 @@ class PersonTracker:
             self.unidentified_tracks.pop(temp_id, None)
         
         # --- STEP 7: Handle unmatched real tracks ---
+        tracks_to_remove = []
         for track_id in unmatched_tracks:
-            # If using optical flow and track was updated, consider it still active
+            # If using optical flow and track was updated by optical flow, consider it still active
             if self.use_optical_flow and self.tracked_objects[track_id].get('optical_flow_updated', False):
                 self.tracked_objects[track_id]['optical_flow_updated'] = False  # Reset flag
                 continue
                 
-            # If track is inactive for too long, close its active interval
-            if current_time - self.tracked_objects[track_id]['last_seen'] > self.disappear_threshold:
+            # If track is inactive for too long, mark it or remove
+            time_since_last_seen = current_time - self.tracked_objects[track_id]['last_seen']
+            
+            if time_since_last_seen > self.disappear_threshold:
+                # Mark the track as inactive
                 self.tracked_objects[track_id]['active'] = False
                 
                 # Close the active interval in time tracking
@@ -1010,6 +1069,32 @@ class PersonTracker:
                                         [(s, e if e is not None else current_time) 
                                         for s, e in intervals])
                         self.time_data[track_id]['total_active_time'] = total_time
+                
+                # If track has been inactive for a long time, consider removing it
+                if time_since_last_seen > (self.disappear_threshold * 5):  # 5x longer for complete removal
+                    tracks_to_remove.append(track_id)
+        
+        # Actually remove tracks that have been marked for removal
+        for track_id in tracks_to_remove:
+            if track_id in self.tracked_objects:
+                # Only log removal of non-temporary tracks
+                if not isinstance(track_id, str) or not track_id.startswith('temp_'):
+                    print(f"Removing track {track_id} due to long inactivity")
+                del self.tracked_objects[track_id]
+                
+                # Clean up related data structures
+                if track_id in self.face_database:
+                    del self.face_database[track_id]
+                if track_id in self.feature_history:
+                    del self.feature_history[track_id]
+                if track_id in self.time_data:
+                    # We might want to keep time data for reporting
+                    # but mark it as completely inactive
+                    intervals = self.time_data[track_id]['active_intervals']
+                    if intervals and intervals[-1][1] is None:
+                        intervals[-1][1] = self.tracked_objects[track_id]['last_seen']
+                if track_id in self.optical_flow_points:
+                    del self.optical_flow_points[track_id]
         
         # Return all currently tracked objects (active and inactive)
         return self.tracked_objects
@@ -2362,13 +2447,14 @@ class PeopleTrackingGUI:
         return detections
     
     def draw_results(self, frame, tracked_objects, camera_id=None):
-        """Draw bounding boxes and labels on the frame"""
+        """Draw bounding boxes and labels with duration for tracked objects"""
         result = frame.copy()
+        current_time = time.time()
         
         # Check the format of tracked_objects and adapt accordingly
         if hasattr(tracked_objects, 'values') and callable(getattr(tracked_objects, 'values')):
             # tracked_objects is a dictionary, iterate through values
-            objects_to_draw = tracked_objects.values()
+            objects_to_draw = {k: v for k, v in tracked_objects.items() if v.get('active', True)}
         elif isinstance(tracked_objects, (list, tuple)):
             # tracked_objects is already a list or tuple
             objects_to_draw = tracked_objects
@@ -2377,18 +2463,28 @@ class PeopleTrackingGUI:
             self.log_message(f"Error: Unexpected tracked_objects format: {type(tracked_objects)}")
             return result
         
-        for obj in objects_to_draw:
+        # Get the tracker for this camera if available (for time data)
+        tracker = None
+        if camera_id is not None and camera_id in self.trackers:
+            tracker = self.trackers[camera_id]
+        
+        # Draw each object
+        for obj_id, obj in objects_to_draw.items() if hasattr(objects_to_draw, 'items') else [(i, o) for i, o in enumerate(objects_to_draw)]:
             try:
+                # Skip inactive tracks
+                if not obj.get('active', True):
+                    continue
+                    
                 # Check if obj is a dictionary or supports get method
                 if not hasattr(obj, 'get') or not callable(getattr(obj, 'get')):
                     # Skip if not a dictionary-like object
                     continue
                 
                 # Extract information
-                track_id = obj.get('id', 'unknown')
+                track_id = obj.get('id', obj_id)  # Use the dictionary key as fallback
                 bbox = obj.get('bbox')
-                name = obj.get('name', '')
-                is_temp = obj.get('is_temp', True)
+                name = obj.get('name', 'UNK')
+                is_temp = isinstance(track_id, str) and track_id.startswith('temp_')
                 confidence = obj.get('confidence', 0)
                 recently_reid = obj.get('recently_reid', False)
                 
@@ -2397,36 +2493,50 @@ class PeopleTrackingGUI:
                     
                 x1, y1, x2, y2 = bbox
                 
-                # Choose color based on ID (temporary tracks are lighter)
+                # Calculate duration for this track
+                duration_str = "00:00:00"
+                if tracker is not None:
+                    # Try to get duration from time_data
+                    if hasattr(tracker, 'time_data') and track_id in tracker.time_data:
+                        time_data = tracker.time_data[track_id]
+                        
+                        # Calculate total duration from intervals
+                        total_duration = time_data.get('total_active_time', 0)
+                        
+                        # Add duration of current active interval if exists
+                        intervals = time_data.get('active_intervals', [])
+                        if intervals and intervals[-1][1] is None:
+                            current_interval = current_time - intervals[-1][0]
+                            total_duration += current_interval
+                            
+                        duration_str = self._format_duration(total_duration)
+                    elif 'first_seen' in obj:
+                        # Use direct duration calculation if time_data not available
+                        duration = current_time - obj['first_seen']
+                        duration_str = self._format_duration(duration)
+                
+                # Choose color based on track status
                 if is_temp:
-                    # Temporary track - use lighter color
-                    color = (200, 200, 200)  # Light gray
+                    # Temporary track - use yellow
+                    color = (0, 255, 255)  # Yellow in BGR
+                    label = f"Temp #{track_id} ({duration_str})"
+                elif name == "UNK":
+                    # Unknown but detected face - use orange
+                    color = (0, 165, 255)  # Orange in BGR
+                    label = f"#{track_id} ({duration_str})"
                 else:
-                    # Permanent track - use color based on track_id hash
-                    color_id = hash(str(track_id)) % 10
-                    colors = [
-                        (0, 0, 255),    # Red
-                        (0, 255, 0),    # Green
-                        (255, 0, 0),    # Blue
-                        (0, 255, 255),  # Yellow
-                        (255, 0, 255),  # Magenta
-                        (255, 255, 0),  # Cyan
-                        (128, 0, 255),  # Purple
-                        (0, 128, 255),  # Orange
-                        (255, 128, 0),  # Light Blue
-                        (128, 255, 0),  # Light Green
-                    ]
-                    color = colors[color_id]
+                    # Known person - use green
+                    color = (0, 255, 0)  # Green in BGR
+                    label = f"{name} ({duration_str})"
+                
+                # Change color if recently re-identified
+                if recently_reid:
+                    # Bright cyan for recently re-identified tracks
+                    color = (255, 255, 0)  # Cyan in BGR
                 
                 # Draw bounding box
                 cv2.rectangle(result, (x1, y1), (x2, y2), color, 2)
                 
-                # Prepare label with ID and name if available
-                if name:
-                    label = f"{track_id}: {name} ({confidence:.2f})"
-                else:
-                    label = f"{track_id} ({confidence:.2f})"
-                    
                 # Get text size for background rectangle
                 text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
                 
@@ -2450,7 +2560,7 @@ class PeopleTrackingGUI:
                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
             except Exception as e:
                 # Log the specific error for debugging
-                self.log_message(f"Error drawing object: {str(e)}")
+                self.log_message(f"Error drawing object {obj_id}: {str(e)}")
                 continue
         
         # Add optical flow visualization if available
@@ -2460,8 +2570,11 @@ class PeopleTrackingGUI:
             frame_camera_id = frame.camera_id
             
         if frame_camera_id is not None and frame_camera_id in self.trackers and self.trackers[frame_camera_id].use_optical_flow:
-            # Draw the optical flow points
-            result = self.trackers[frame_camera_id].optical_flow_tracker.draw_flow(result)
+            try:
+                # Draw the optical flow points
+                result = self.trackers[frame_camera_id].optical_flow_tracker.draw_flow(result)
+            except Exception as e:
+                self.log_message(f"Error drawing optical flow: {str(e)}")
         
         return result
     
