@@ -218,7 +218,7 @@ def visualize_encodings_pca(encodings, names, title="PCA of ArcFace Embeddings",
     fig.suptitle(f"Total Explained Variance: {total_var:.2%}", y=0.92)  # Adjusted position
     
     plt.tight_layout(rect=[0, 0, 1, 0.92])  # Adjust layout to avoid title overlap
-    plt.savefig(f"arcface_embeddings_pca_{dim}d.png")
+    # plt.savefig(f"arcface_embeddings_pca_{dim}d.png")
     plt.show()
     
     return fig, ax  # Return the figure and axis for potential further modifications
@@ -295,7 +295,7 @@ def plot_distance_histogram_with_threshold(intra_distances, inter_distances, tit
     plt.ylabel('Frequency')
     plt.legend(loc='best')
     plt.tight_layout()
-    plt.savefig(f"arcface_{metric}_threshold.png")
+    # plt.savefig(f"arcface_{metric}_threshold.png")
     plt.show()
     
     if metric == 'cosine':

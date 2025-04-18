@@ -53,3 +53,19 @@
 - Maintains statistics about:
   - Identifications
   - Identity switches
+
+
+
+## The Tracking Process Step by Step
+Camera Capture: Each camera runs in its own thread capturing frames
+Object Detection: YOLO detects people in frames
+Track Matching: Uses Hungarian algorithm to match detections with existing tracks
+Face Detection & Recognition:
+Only runs periodically (every N frames) to save processing power
+Extracts face features using ArcFace
+Compares with known database and existing tracks
+Re-identification:
+Periodically checks if a tracked person still matches their assigned identity
+Has a failure threshold to handle potential identity switches
+Visual Results: Draw bounding boxes and identity information on the frame
+
