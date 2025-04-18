@@ -2,8 +2,15 @@ import os
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-import face_recognition
+from mpl_toolkits.mplot3d import Axes3D  # For 3D plotting
+import insightface  # Replace face_recognition with InsightFace
 from scipy.spatial.distance import cosine
+import time  # For timing operations
+import torch  # Add torch for GPU detection
+
+# Suppress unnecessary warnings and logs
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["INSIGHTFACE_LOG_LEVEL"] = "ERROR"
 
 # Check if seaborn is available, but make it optional
 try:
@@ -12,10 +19,29 @@ try:
 except ImportError:
     HAS_SEABORN = False
 
+# Initialize ArcFace model
+print("Loading ArcFace model...")
+try:
+    face_model = insightface.app.FaceAnalysis(name='buffalo_l')
+    face_model.prepare(ctx_id=0 if torch.cuda.is_available() else -1)  # Use GPU if available
+except Exception as e:
+    print(f"Error loading ArcFace model: {e}")
+    print("Please install InsightFace: pip install insightface onnxruntime-gpu")
+    face_model = None
+
 def load_encodings_from_known_people(known_people_dir="known_people"):
-    """Load face encodings from the known_people directory"""
+    """Load face encodings from the known_people directory using ArcFace"""
+    # Try both current directory and app subdirectory
+    if not os.path.exists(known_people_dir) and os.path.exists(os.path.join("app", known_people_dir)):
+        known_people_dir = os.path.join("app", known_people_dir)
+        print(f"Using known_people directory from app subdirectory: {known_people_dir}")
+    
     if not os.path.exists(known_people_dir):
         print(f"Known people directory not found: {known_people_dir}")
+        return {}, [], [], []
+    
+    if face_model is None:
+        print("ArcFace model not available. Cannot load encodings.")
         return {}, [], [], []
     
     # Data structures to store encodings and metadata
@@ -23,6 +49,9 @@ def load_encodings_from_known_people(known_people_dir="known_people"):
     all_names = []
     all_image_paths = []
     name_to_encodings = {}
+    
+    start_time = time.time()
+    print("Extracting ArcFace embeddings from known people...")
     
     for person_name in os.listdir(known_people_dir):
         person_dir = os.path.join(known_people_dir, person_name)
@@ -38,28 +67,34 @@ def load_encodings_from_known_people(known_people_dir="known_people"):
             
             img_path = os.path.join(person_dir, img_file)
             try:
-                # Load and convert image
+                # Load image
                 frame = cv2.imread(img_path)
                 if frame is None:
                     continue
-                    
-                # Convert to RGB (face_recognition expects RGB)
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                # Get face encoding using face_recognition
-                face_encodings = face_recognition.face_encodings(rgb_frame)
+                # Detect faces using ArcFace
+                faces = face_model.get(frame)
                 
-                if face_encodings:
-                    encoding = face_encodings[0]
-                    encodings.append(encoding)
-                    image_paths.append(img_path)
-                    
-                    # Add to global lists
-                    all_encodings.append(encoding)
-                    all_names.append(person_name)
-                    all_image_paths.append(img_path)
-                    
-                    print(f"Successfully extracted features from {img_path}")
+                if not faces:
+                    print(f"No face found in {img_path}")
+                    continue
+                
+                # Use the face with highest detection score
+                best_face = max(faces, key=lambda x: x.det_score) if len(faces) > 1 else faces[0]
+                
+                # Get and normalize the embedding
+                embedding = best_face.embedding
+                normalized_embedding = embedding / np.linalg.norm(embedding)
+                
+                encodings.append(normalized_embedding)
+                image_paths.append(img_path)
+                
+                # Add to global lists
+                all_encodings.append(normalized_embedding)
+                all_names.append(person_name)
+                all_image_paths.append(img_path)
+                
+                print(f"Successfully extracted features from {img_path}")
                 
             except Exception as e:
                 print(f"Error processing {img_path}: {e}")
@@ -74,10 +109,13 @@ def load_encodings_from_known_people(known_people_dir="known_people"):
         else:
             print(f"Warning: No valid encodings extracted for {person_name}")
     
+    elapsed_time = time.time() - start_time
+    print(f"Completed feature extraction in {elapsed_time:.2f} seconds")
+    
     return name_to_encodings, all_encodings, all_names, all_image_paths
 
-def simple_pca(X, n_components=2):
-    """Simple PCA implementation without requiring scikit-learn"""
+def simple_pca(X, n_components=3):
+    """Simple PCA implementation supporting up to 3 components"""
     # Center the data
     X_centered = X - np.mean(X, axis=0)
     
@@ -92,7 +130,8 @@ def simple_pca(X, n_components=2):
     eigenvectors = eigenvectors[:, idx]
     eigenvalues = eigenvalues[idx]
     
-    # Select top n_components eigenvectors
+    # Select top n_components eigenvectors (up to 3)
+    n_components = min(n_components, 3)  # Ensure at most 3 components
     components = eigenvectors[:, :n_components]
     
     # Project data onto principal components
@@ -103,20 +142,21 @@ def simple_pca(X, n_components=2):
     
     return X_pca, explained_variance
 
-def visualize_encodings_pca(encodings, names, title="PCA of Face Encodings"):
-    """Visualize encodings using PCA for dimensionality reduction"""
+def visualize_encodings_pca(encodings, names, title="PCA of ArcFace Embeddings", dim=3):
+    """Visualize encodings using PCA for dimensionality reduction with 2D or 3D plots"""
     if not encodings:
         print("No encodings to visualize")
         return
+    
+    if dim not in [2, 3]:
+        print("Dimension must be 2 or 3")
+        dim = 3  # Default to 3D
     
     # Convert to numpy array
     X = np.array(encodings)
     
     # Perform PCA
-    X_pca, explained_variance = simple_pca(X, n_components=2)
-    
-    # Create a scatter plot
-    plt.figure(figsize=(12, 8))
+    X_pca, explained_variance = simple_pca(X, n_components=dim)
     
     # Get unique names and assign colors
     unique_names = list(set(names))
@@ -131,41 +171,72 @@ def visualize_encodings_pca(encodings, names, title="PCA of Face Encodings"):
     
     name_to_color = {name: colors[i] for i, name in enumerate(unique_names)}
     
-    # Plot each point
-    for i, (x, y) in enumerate(X_pca):
-        name = names[i]
-        color = name_to_color[name]
-        plt.scatter(x, y, c=[color], label=name, alpha=0.7)
+    # Create figure
+    fig = plt.figure(figsize=(12, 10))
+    
+    # Plot based on dimension
+    if dim == 2:
+        # 2D plot
+        ax = fig.add_subplot(111)
+        
+        # Plot each point
+        for i, (x, y) in enumerate(X_pca):
+            name = names[i]
+            color = name_to_color[name]
+            ax.scatter(x, y, c=[color], label=name, alpha=0.7)
+        
+        ax.set_xlabel(f"PC1 ({explained_variance[0]:.2%} variance)")
+        ax.set_ylabel(f"PC2 ({explained_variance[1]:.2%} variance)")
+        ax.grid(alpha=0.3)
+        
+    else:
+        # 3D plot
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Plot each point
+        for i, (x, y, z) in enumerate(X_pca):
+            name = names[i]
+            color = name_to_color[name]
+            ax.scatter(x, y, z, c=[color], label=name, alpha=0.7, s=100)  # Larger points
+        
+        ax.set_xlabel(f"PC1 ({explained_variance[0]:.2%})")
+        ax.set_ylabel(f"PC2 ({explained_variance[1]:.2%})")
+        ax.set_zlabel(f"PC3 ({explained_variance[2]:.2%})")
+        
+        # Add rotation capability
+        ax.view_init(elev=30, azim=45)
     
     # Remove duplicate labels
-    handles, labels = plt.gca().get_legend_handles_labels()
+    handles, labels = ax.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
-    plt.legend(by_label.values(), by_label.keys(), loc='best')
+    ax.legend(by_label.values(), by_label.keys(), loc='best')
     
-    plt.title(title)
-    plt.xlabel(f"Principal Component 1 ({explained_variance[0]:.2%} variance)")
-    plt.ylabel(f"Principal Component 2 ({explained_variance[1]:.2%} variance)")
-    plt.grid(alpha=0.3)
+    ax.set_title(title)
     
     # Show the total explained variance
     total_var = sum(explained_variance)
-    plt.suptitle(f"Total Explained Variance: {total_var:.2%}", y=0.92)
+    fig.suptitle(f"Total Explained Variance: {total_var:.2%}", y=0.92)  # Adjusted position
     
-    plt.tight_layout()
-    # plt.savefig("face_encodings_pca.png")
+    plt.tight_layout(rect=[0, 0, 1, 0.92])  # Adjust layout to avoid title overlap
+    plt.savefig(f"arcface_embeddings_pca_{dim}d.png")
     plt.show()
+    
+    return fig, ax  # Return the figure and axis for potential further modifications
 
-def calculate_distance(vector1, vector2, metric='euclidean'):
-    """Calculate distance between two vectors using specified metric"""
+def calculate_distance(vector1, vector2, metric='cosine'):
+    """Calculate distance between two vectors using specified metric
+    For ArcFace, cosine similarity is the preferred method."""
     if metric == 'euclidean':
         return np.linalg.norm(vector1 - vector2)
     elif metric == 'cosine':
-        # Cosine similarity is 1 when vectors are identical, so we use 1-similarity as distance
-        return cosine(vector1, vector2)
+        # For ArcFace, we use 1-similarity as distance metric
+        # Dot product of normalized vectors gives cosine similarity
+        similarity = np.dot(vector1, vector2)
+        return 1 - similarity
     else:
         raise ValueError(f"Unknown distance metric: {metric}")
 
-def calculate_distance_stats(name_to_encodings, metric='euclidean'):
+def calculate_distance_stats(name_to_encodings, metric='cosine'):
     """Calculate intra-class and inter-class distances using specified metric"""
     # Intra-class distances (same person)
     intra_class_distances = []
@@ -201,9 +272,13 @@ def calculate_distance_stats(name_to_encodings, metric='euclidean'):
     
     return intra_class_distances, inter_class_distances
 
-def plot_distance_histogram(intra_distances, inter_distances, title, metric='euclidean'):
-    """Plot histogram of distances"""
+def plot_distance_histogram_with_threshold(intra_distances, inter_distances, title, metric='cosine'):
+    """Plot histogram of distances with suggested threshold"""
     plt.figure(figsize=(10, 6))
+    
+    # Calculate a good threshold between distributions
+    threshold = (np.max(intra_distances) + np.min(inter_distances)) / 2
+    
     if HAS_SEABORN:
         sns.histplot(intra_distances, color='blue', label='Same Person', alpha=0.5, kde=True)
         sns.histplot(inter_distances, color='red', label='Different People', alpha=0.5, kde=True)
@@ -211,15 +286,29 @@ def plot_distance_histogram(intra_distances, inter_distances, title, metric='euc
         plt.hist(intra_distances, color='blue', label='Same Person', alpha=0.5, bins=20)
         plt.hist(inter_distances, color='red', label='Different People', alpha=0.5, bins=20)
     
+    # Add threshold line
+    plt.axvline(x=threshold, color='green', linestyle='--', 
+               label=f'Threshold: {threshold:.4f}')
+    
     plt.title(title)
     plt.xlabel(f'{metric.capitalize()} Distance')
     plt.ylabel('Frequency')
-    plt.legend()
-    # plt.savefig(f"distance_distribution_{metric}.png")
+    plt.legend(loc='best')
     plt.tight_layout()
+    plt.savefig(f"arcface_{metric}_threshold.png")
+    plt.show()
+    
+    if metric == 'cosine':
+        similarity_threshold = 1 - threshold
+        print(f"Recommended {metric} distance threshold: {threshold:.4f}")
+        print(f"(Use {similarity_threshold:.4f} as similarity threshold)")
+    else:
+        print(f"Recommended {metric} distance threshold: {threshold:.4f}")
+    
+    return threshold
 
 def main():
-    print("Loading face encodings...")
+    print("Loading ArcFace embeddings...")
     name_to_encodings, all_encodings, all_names, all_image_paths = load_encodings_from_known_people()
     
     if not all_encodings:
@@ -228,53 +317,43 @@ def main():
     
     print(f"Loaded {len(all_encodings)} total encodings from {len(name_to_encodings)} people")
     
-    # Visualize with PCA
-    print("Visualizing encodings with PCA...")
-    visualize_encodings_pca(all_encodings, all_names)
+    # Visualize with PCA in 3D only
+    print("Visualizing embeddings with 3D PCA...")
+    visualize_encodings_pca(all_encodings, all_names, title="3D PCA of ArcFace Embeddings", dim=3)
+    
+    # Calculate distance statistics for Cosine distance (preferred for ArcFace)
+    print("\nCalculating Cosine distance statistics (recommended for ArcFace)...")
+    cosine_intra, cosine_inter = calculate_distance_stats(name_to_encodings, 'cosine')
+    
+    if cosine_intra and cosine_inter:
+        avg_intra = np.mean(cosine_intra)
+        avg_inter = np.mean(cosine_inter)
+        print(f"Average Cosine distance: Same person = {avg_intra:.4f}, Different people = {avg_inter:.4f}")
+        
+        # Plot distribution with threshold
+        cosine_threshold = plot_distance_histogram_with_threshold(
+            cosine_intra, 
+            cosine_inter, 
+            'ArcFace Cosine Distance Distribution', 
+            'cosine'
+        )
     
     # Calculate and display distance statistics for Euclidean distance
     print("\nCalculating Euclidean distance statistics...")
     euclidean_intra, euclidean_inter = calculate_distance_stats(name_to_encodings, 'euclidean')
     
-    if euclidean_intra:
-        avg_intra = np.mean(euclidean_intra)
-        print(f"Average Euclidean distance between same person: {avg_intra:.4f} [0.3-0.5 is good]")
-    
-    if euclidean_inter:
-        avg_inter = np.mean(euclidean_inter)
-        print(f"Average Euclidean distance between different people: {avg_inter:.4f} [0.7+ is good]")
-    
     if euclidean_intra and euclidean_inter:
-        # Plot distributions
-        plot_distance_histogram(
+        avg_intra = np.mean(euclidean_intra)
+        avg_inter = np.mean(euclidean_inter)
+        print(f"Average Euclidean distance: Same person = {avg_intra:.4f}, Different people = {avg_inter:.4f}")
+        
+        # Plot distribution with threshold
+        euclidean_threshold = plot_distance_histogram_with_threshold(
             euclidean_intra, 
             euclidean_inter, 
-            'Euclidean Distance Distribution', 
+            'ArcFace Euclidean Distance Distribution', 
             'euclidean'
         )
-        plt.show()
-    
-    # Calculate and display distance statistics for Cosine distance
-    print("\nCalculating Cosine distance statistics...")
-    cosine_intra, cosine_inter = calculate_distance_stats(name_to_encodings, 'cosine')
-    
-    if cosine_intra:
-        avg_intra = np.mean(cosine_intra)
-        print(f"Average Cosine distance between same person: {avg_intra:.4f} [0.0-0.2 is good]")
-    
-    if cosine_inter:
-        avg_inter = np.mean(cosine_inter)
-        print(f"Average Cosine distance between different people: {avg_inter:.4f} [0.3+ is good]")
-    
-    if cosine_intra and cosine_inter:
-        # Plot distributions
-        plot_distance_histogram(
-            cosine_intra, 
-            cosine_inter, 
-            'Cosine Distance Distribution', 
-            'cosine'
-        )
-        plt.show()
     
     # Print comparison summary
     if euclidean_intra and euclidean_inter and cosine_intra and cosine_inter:
@@ -288,7 +367,9 @@ def main():
         if euclidean_ratio > cosine_ratio:
             print("Euclidean distance provides better separation for this dataset")
         else:
-            print("Cosine distance provides better separation for this dataset")
+            print("Cosine distance provides better separation for this dataset (recommended for ArcFace)")
+            
+    print("\nVisualization images saved to current directory.")
 
 if __name__ == "__main__":
     main()
