@@ -244,11 +244,13 @@ class PersonTracker:
         # Choose distance metric based on configuration
         if self.use_cosine_distance:
             # Cosine distance: 0 is identical, 1 is completely different
-            return cosine(feature1, feature2)
+            distance = cosine(feature1, feature2)
         else:
             # Euclidean distance (face_recognition's default)
             # Using face_recognition's face_distance which is optimized for dlib encodings
-            return face_recognition.face_distance([feature1], feature2)[0]
+            distance = face_recognition.face_distance([feature1], feature2)[0]
+            
+        return distance
 
     def _update_feature_history(self, track_id, new_feature):
         """Update feature history for a track and compute average feature"""
@@ -272,13 +274,18 @@ class PersonTracker:
         best_match_name = "UNK"
         min_distance = float('inf')
         
+        metric_name = "Cosine" if self.use_cosine_distance else "Euclidean"
+        threshold = self.similarity_threshold
+        print(f"\n===== Face Matching ({metric_name}, threshold={threshold:.4f}) =====")
+        
         # --- FIRST CHECK: Match with known people ---
+        print(f"-- Checking against known people database --")
         # Check each known person individually
         for name, data in self.known_people.items():
-            for known_feature in data['features']:
+            for i, known_feature in enumerate(data['features']):
                 # Calculate distance using selected metric
                 distance = self._calculate_feature_distance(known_feature, face_feature)
-                print(f"Distance to {name}: {distance:.4f}")
+                print(f"Distance to {name} (feature {i+1}): {distance:.4f}")
                 
                 # Update best match if this is better
                 if distance < min_distance and distance < self.similarity_threshold:
@@ -297,6 +304,7 @@ class PersonTracker:
 
         # --- SECOND CHECK: If no known person match, try recent tracks ---
         if best_match_id == -1 and best_match_name == "UNK":
+            print(f"-- No match in known database, checking against recent tracks --")
             # Check each track individually
             for track_id, track_data in self.face_database.items():
                 # Skip tracks that are too old
@@ -315,6 +323,8 @@ class PersonTracker:
                 
                 # Calculate distance using selected metric
                 distance = self._calculate_feature_distance(track_feature, face_feature)
+                track_name = self.tracked_objects.get(track_id, {}).get('name', 'UNK')
+                print(f"Distance to track #{track_id} (name: {track_name}): {distance:.4f}")
                 
                 # Update best match if this is better
                 if distance < min_distance and distance < self.similarity_threshold:
@@ -322,7 +332,8 @@ class PersonTracker:
                     best_match_id = track_id
                     best_match_name = self.tracked_objects.get(track_id, {}).get('name', 'UNK')
                     print(f"Re-identified track {best_match_id} with distance {min_distance:.4f}")
-
+        
+        print(f"===== Face Matching Result: ID={best_match_id}, Name={best_match_name}, Distance={min_distance:.4f} =====\n")
         return best_match_id, best_match_name, min_distance
 
     def _calculate_appearance_similarity(self, frame, bbox1, bbox2):
@@ -509,6 +520,8 @@ class PersonTracker:
             
         track_data = self.tracked_objects[track_id]
         current_name = track_data.get('name', 'UNK')
+        
+        print(f"\n===== Re-identification for Track #{track_id} (current name: {current_name}) =====")
         
         # Find best match for this face feature
         best_match_id, best_match_name, min_distance = self._find_best_face_match(face_feature, current_time)
@@ -713,6 +726,7 @@ class PersonTracker:
                 face_feature = self._extract_face_feature(frame, bbox)
                 
                 if face_feature is not None:
+                    print(f"\n===== New Face Detection (Detection #{det_idx}) =====")
                     best_match_id, name, min_distance = self._find_best_face_match(face_feature, current_time)
                     
                     if best_match_id != -1:
