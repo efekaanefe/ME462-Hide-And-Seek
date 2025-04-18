@@ -14,9 +14,12 @@ from scipy.spatial.distance import cosine # For feature comparison
 import os
 import json
 from ultralytics import YOLO
-import dlib
-import face_recognition  # This uses dlib internally with a more convenient API
+import insightface  # Using ArcFace instead of dlib
 from scipy.optimize import linear_sum_assignment  # Added for Hungarian Algorithm
+
+# Suppress unnecessary warnings and logs
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["INSIGHTFACE_LOG_LEVEL"] = "ERROR"
 
 # Check if CUDA is available
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -27,6 +30,14 @@ try:
 except ImportError:
     messagebox.showerror("Error", "Please install ultralytics: pip install ultralytics")
     model = None
+
+# Load ArcFace model
+try:
+    face_model = insightface.app.FaceAnalysis(name='buffalo_l')
+    face_model.prepare(ctx_id=0 if device == 'cuda' else -1)  # Use GPU if available
+except ImportError:
+    messagebox.showerror("Error", "Please install insightface: pip install insightface-python onnxruntime-gpu")
+    face_model = None
 
 
 class PersonTracker:
@@ -39,11 +50,15 @@ class PersonTracker:
         self.iou_threshold = 0.4  # Minimum IoU for matching consideration
         
         # Set distance metric for feature comparison
-        self.use_cosine_distance = True  # Default is Euclidean, set to True for cosine
+        self.use_cosine_distance = True  # Default to cosine for ArcFace
         
         # Single similarity threshold (used for both feature matching and re-identification)
-        self.similarity_threshold = 0.55  # Default threshold for Euclidean distance
-        self.cosine_similarity_threshold = 0.06  # Default threshold for cosine distance
+        self.similarity_threshold = 0.85  # Default threshold for Euclidean distance with ArcFace
+        self.cosine_similarity_threshold = 0.36  # Default threshold for ArcFace cosine distance
+        
+        # Use the appropriate threshold based on the distance metric
+        if self.use_cosine_distance:
+            self.similarity_threshold = self.cosine_similarity_threshold
         
         # Periodic re-identification settings
         self.periodic_reid_enabled = True  # Enable periodic re-identification
@@ -90,9 +105,13 @@ class PersonTracker:
              print("WARNING: YOLO model not available. Face re-identification will be disabled.")
 
     def load_known_people(self):
-        """Load known people with improved feature extraction"""
+        """Load known people with ArcFace feature extraction"""
         if not os.path.exists(self.known_people_dir):
             print(f"Known people directory not found: {self.known_people_dir}")
+            return
+            
+        if face_model is None:
+            print("ArcFace model not available. Cannot load known people.")
             return
 
         for person_name in os.listdir(self.known_people_dir):
@@ -109,29 +128,28 @@ class PersonTracker:
                 
                 img_path = os.path.join(person_dir, img_file)
                 try:
-                    # Load and convert image
+                    # Load image
                     frame = cv2.imread(img_path)
                     if frame is None:
                         continue
                         
-                    # Convert to RGB (face_recognition expects RGB)
-                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    # Detect faces using ArcFace
+                    faces = face_model.get(frame)
                     
-                    # Detect face locations using face_recognition (more reliable for stored images)
-                    # face_locations = face_recognition.face_locations(rgb_frame)
-                    #
-                    # if not face_locations:
-                    #     print(f"No face found in {img_path}")
-                    #     continue
+                    if not faces:
+                        print(f"No face found in {img_path}")
+                        continue
                     
-                    # Get face encoding using face_recognition
-                    # face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-                    face_encodings = face_recognition.face_encodings(rgb_frame)
+                    # Use the face with highest detection score
+                    best_face = max(faces, key=lambda x: x.det_score) if len(faces) > 1 else faces[0]
                     
-                    if face_encodings:
-                        features.append(face_encodings[0])
-                        images.append(img_path)
-                        print(f"Successfully extracted features from {img_path}")
+                    # Get and normalize the embedding
+                    embedding = best_face.embedding
+                    normalized_embedding = embedding / np.linalg.norm(embedding)
+                    
+                    features.append(normalized_embedding)
+                    images.append(img_path)
+                    print(f"Successfully extracted features from {img_path}")
                     
                 except Exception as e:
                     print(f"Error processing {img_path}: {e}")
@@ -147,7 +165,11 @@ class PersonTracker:
                 print(f"Warning: No valid features extracted for {person_name}")
 
     def add_person_images(self, name, image_paths):
-        """Add new images for a person to the dataset."""
+        """Add new images for a person to the dataset using ArcFace."""
+        if face_model is None:
+            print("ArcFace model not available. Cannot add person images.")
+            return 0
+            
         person_dir = os.path.join(self.known_people_dir, name)
         if not os.path.exists(person_dir):
             os.makedirs(person_dir)
@@ -163,17 +185,27 @@ class PersonTracker:
                     print(f"Warning: Could not read image {img_path}")
                     continue
                 
-                # Extract face feature
-                feature = self._extract_face_feature(img, [0, 0, img.shape[1], img.shape[0]])
-                if feature is not None:
-                    # Copy image to person's directory
-                    new_path = os.path.join(person_dir, os.path.basename(img_path))
-                    cv2.imwrite(new_path, img)
+                # Extract face using ArcFace
+                faces = face_model.get(img)
+                
+                if not faces:
+                    print(f"Warning: No face detected in {img_path}")
+                    continue
                     
-                    features.append(feature)
-                    saved_paths.append(new_path)
-                else:
-                    print(f"Warning: Could not extract face feature from {img_path}")
+                # Use the face with highest detection score
+                best_face = max(faces, key=lambda x: x.det_score) if len(faces) > 1 else faces[0]
+                
+                # Get and normalize the embedding
+                embedding = best_face.embedding
+                normalized_embedding = embedding / np.linalg.norm(embedding)
+                
+                # Copy image to person's directory
+                new_path = os.path.join(person_dir, os.path.basename(img_path))
+                cv2.imwrite(new_path, img)
+                
+                features.append(normalized_embedding)
+                saved_paths.append(new_path)
+                
             except Exception as e:
                 print(f"Error processing {img_path}: {e}")
                 continue
@@ -191,13 +223,13 @@ class PersonTracker:
 
     # +++ Helper: Extract Face Feature +++
     def _extract_face_feature(self, frame, bbox):
-        """Extract face features using face_recognition library (based on dlib)"""
+        """Extract face features using ArcFace model"""
         try:
-            # Bail early if frame is invalid
-            if frame is None or frame.size == 0:
+            # Bail early if frame is invalid or face_model not available
+            if frame is None or frame.size == 0 or face_model is None:
                 return None
                 
-            # Convert bbox from (x1, y1, x2, y2) to dlib rectangle with padding
+            # Convert bbox from (x1, y1, x2, y2) to integers with padding
             x1, y1, x2, y2 = map(int, bbox)
             
             # Add padding to the bounding box (20% on each side)
@@ -216,20 +248,38 @@ class PersonTracker:
             if (x2 - x1) < 30 or (y2 - y1) < 30:
                 return None
 
-            # Convert to RGB (face_recognition expects RGB)
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Create a cropped image for face detection
+            face_img = frame[y1:y2, x1:x2]
             
-            # Convert to face_recognition format (top, right, bottom, left)
-            face_location = (y1, x2, y2, x1)
+            # Get face embedding using ArcFace
+            faces = face_model.get(face_img)
             
-            # Extract face encoding using face_recognition (more reliable)
-            # face_encodings = face_recognition.face_encodings(rgb_frame, [face_location]) # for some reason giving face_locations makes recognition worse
-            face_encodings = face_recognition.face_encodings(rgb_frame)
+            if not faces:
+                # Try with the full frame if crop fails
+                faces = face_model.get(frame)
+                
+                # Filter faces that overlap with our bbox
+                if faces:
+                    valid_faces = []
+                    for face in faces:
+                        face_box = face.bbox.astype(int)
+                        # Check if the face overlaps with our person bbox
+                        if self._calculate_iou([face_box[0], face_box[1], face_box[2], face_box[3]], 
+                                              [x1, y1, x2, y2]) > 0.5:
+                            valid_faces.append(face)
+                    faces = valid_faces
             
-            if not face_encodings:
+            if not faces:
                 return None
                 
-            return face_encodings[0]
+            # Get the embedding for the face with highest confidence
+            best_face = max(faces, key=lambda x: x.det_score) if len(faces) > 1 else faces[0]
+            embedding = best_face.embedding
+            
+            # Normalize the embedding (important for ArcFace comparison)
+            normalized_embedding = embedding / np.linalg.norm(embedding)
+            
+            return normalized_embedding
             
         except Exception as e:
             print(f"Error extracting face feature: {e}")
@@ -243,14 +293,15 @@ class PersonTracker:
         
         # Choose distance metric based on configuration
         if self.use_cosine_distance:
-            # Cosine distance: 0 is identical, 1 is completely different
-            distance = cosine(feature1, feature2)
+            # For ArcFace, cosine similarity is preferred
+            # Cosine similarity: 1 is identical, -1 is completely different
+            # Convert to distance: 0 is identical, 2 is completely different
+            similarity = np.dot(feature1, feature2)
+            # Return 1-similarity so lower is better (consistent with other distance metrics)
+            return 1 - similarity
         else:
-            # Euclidean distance (face_recognition's default)
-            # Using face_recognition's face_distance which is optimized for dlib encodings
-            distance = face_recognition.face_distance([feature1], feature2)[0]
-            
-        return distance
+            # Euclidean distance
+            return np.linalg.norm(feature1 - feature2)
 
     def _update_feature_history(self, track_id, new_feature):
         """Update feature history for a track and compute average feature"""
@@ -1079,6 +1130,14 @@ class PersonTracker:
         # If already using the requested metric, no change needed
         if self.use_cosine_distance == use_cosine:
             return
+            
+        # For ArcFace, we need different thresholds
+        if use_cosine:
+            # ArcFace with cosine similarity (1-similarity becomes distance)
+            self.cosine_similarity_threshold = 0.36  # Lower means more strict
+        else:
+            # Euclidean distance for ArcFace
+            self.similarity_threshold = 0.85  # Higher means more strict
             
         # Swap thresholds before changing metric
         current_threshold = self.similarity_threshold
