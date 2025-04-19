@@ -147,7 +147,6 @@ class Trajectory():
         self.bboxes.append(raw_bbox)
         self.object_id.append(object_id)
         self.add_smothed_bbox()
-        
 
     def remove_last_n_nodes(self, n):
         assert len(self.bboxes) == len(self.smothed_bboxes)
@@ -159,7 +158,6 @@ class Trajectory():
     def get_trajectory_length(self):
         # assert len(self.bboxes) == len(self.smothed_bboxes)
         return len(self.bboxes)
-
 
     def is_on_edge(self):
         '''
@@ -210,7 +208,6 @@ class Tracker():
         self.assoc_score_thresh = assoc_score_thresh
         self.cost_metric = cost_metric
 
-
     def add_trajectory(self, start_bbox, start_object_id, born_time):
         ''', 
             Params:
@@ -220,7 +217,6 @@ class Tracker():
 
         self.alive_index.append(len(self.trajectories)) # newly added trajectories are alive
         self.trajectories.append(Trajectory(start_bbox, start_object_id, born_time, self.image_boundary, self.traj_smoth_alpha))
-
 
     def association(self, candidate_bboxes):
         last_boxes = self.get_alive_last_bboxes(is_smoth=False)
@@ -506,8 +502,8 @@ def process_video(video_path, output_path, model_path='yolov8n.pt'):
 
 def main():
     # Replace with your video path
-    input_video = "test.mp4"
-    output_video = "out2.mp4"
+    input_video = "test-home.mp4"
+    output_video = "out-home-hungarian.mp4"
     model_path = "models/yolov8n.pt"  # using the nano model by default
     
     # Create utils.py if not exists

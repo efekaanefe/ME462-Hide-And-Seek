@@ -47,14 +47,14 @@ class PersonTracker:
         self.face_database = {}  # Permanent storage: {id: {'feature': feature_vector, 'last_seen': timestamp}}
         self.disappear_threshold = 2.0
         self.reid_time_window = 100.0  # Very long to effectively keep all tracks for re-id
-        self.iou_threshold = 0.4  # Minimum IoU for matching consideration
+        self.iou_threshold = 0.7  # Minimum IoU for matching consideration
         
         # Set distance metric for feature comparison
         self.use_cosine_distance = True  # Default to cosine for ArcFace
         
         # Single similarity threshold (used for both feature matching and re-identification)
         self.similarity_threshold = 0.85  # Default threshold for Euclidean distance with ArcFace
-        self.cosine_similarity_threshold = 0.36  # Default threshold for ArcFace cosine distance
+        self.cosine_similarity_threshold = 0.55  # Default threshold for ArcFace cosine distance
         
         # Use the appropriate threshold based on the distance metric
         if self.use_cosine_distance:
@@ -443,7 +443,7 @@ class PersonTracker:
             print(f"Error calculating appearance similarity: {e}")
             return 0.0
 
-    def _hungarian_match_iou_appearance(self, frame, tracks, detections, current_time):
+    def _hungarian_match_iou(self, frame, tracks, detections, current_time):
         """
         Enhanced Hungarian algorithm using both IoU and appearance similarity.
         
@@ -478,31 +478,14 @@ class PersonTracker:
             
             for j, detection in enumerate(detections):
                 det_bbox = detection['bbox']
-                
+
                 # Calculate IoU with both predicted and current bbox
                 current_iou = self._calculate_iou(track_bbox, det_bbox)
                 predicted_iou = self._calculate_iou(predicted_bbox, det_bbox)
                 best_iou = max(current_iou, predicted_iou)
-                
-                # Only calculate appearance similarity if IoU is reasonable
-                # This improves performance by skipping obviously poor matches
-                if best_iou > 0.1:  # Lower threshold for appearance check
-                    # Calculate appearance similarity
-                    appearance_similarity = self._calculate_appearance_similarity(frame, track_bbox, det_bbox)
-                    
-                    # Combine IoU and appearance similarity (weighted average)
-                    # Give more weight to IoU initially, but use appearance for resolving close cases
-                    combined_score = 0.7 * best_iou + 0.3 * appearance_similarity
-                    
-                    # For boxes with significant overlap, give more weight to appearance
-                    if best_iou > 0.5:
-                        combined_score = 0.4 * best_iou + 0.6 * appearance_similarity
-                        
-                    # Only consider as match if combined score is good enough
-                    if combined_score > self.iou_threshold:
-                        # Convert to cost (lower is better for Hungarian algorithm)
-                        cost_matrix[i, j] = 1.0 - combined_score
-                    
+
+                cost_matrix[i, j] = -best_iou
+
         # Use Hungarian algorithm to find optimal assignment
         row_indices, col_indices = linear_sum_assignment(cost_matrix)
         
@@ -719,7 +702,7 @@ class PersonTracker:
         
         if active_permanent_tracks and detections:
             # Apply enhanced Hungarian algorithm that uses both IoU and appearance
-            matches, unmatched_tracks, unmatched_detections = self._hungarian_match_iou_appearance(
+            matches, unmatched_tracks, unmatched_detections = self._hungarian_match_iou(
                 frame, active_permanent_tracks, detections, current_time
             )
             

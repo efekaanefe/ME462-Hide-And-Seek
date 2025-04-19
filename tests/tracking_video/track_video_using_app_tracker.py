@@ -412,12 +412,12 @@ def draw_results(frame, tracked_objects, tracker, current_time):
 
 if __name__ == '__main__':
     # Set default parameters if no arguments are provided
-    video_path = "test.mp4"  # Default video path
-    output_path = "out.mp4"  # Default output path
+    video_path = "test-home.mp4"  # Default video path
+    output_path = "out-home.mp4"  # Default output path
     skip_frames = 0  # Process every frame
     confidence = 0.75  # Default confidence threshold
     headless = True  # Default to try using GUI
-    reid_interval = 5  # Default re-ID interval in seconds
+    reid_interval = 11  # Default re-ID interval in seconds
     
     # Check for models
     if model is None:
