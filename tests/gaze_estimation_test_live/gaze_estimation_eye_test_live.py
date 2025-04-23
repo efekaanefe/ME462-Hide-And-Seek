@@ -67,7 +67,7 @@ while cap.isOpened():
             horizontal_ratio = (left_horizontal_ratio + right_horizontal_ratio) / 2
             vertical_ratio = (left_vertical_ratio + right_vertical_ratio) / 2
             
-
+            
             # Decision logic
             if horizontal_ratio <= 0.35:
                 gaze_horizontal = "Looking Left"
@@ -75,8 +75,7 @@ while cap.isOpened():
                 gaze_horizontal = "Looking Right"
             else:
                 gaze_horizontal = "Looking Center"
-            print(vertical_ratio)
-            # Decision logic
+
             if vertical_ratio <= 0.35:
                 gaze_vertical = "Looking Up"
             elif vertical_ratio >= 0.65:
