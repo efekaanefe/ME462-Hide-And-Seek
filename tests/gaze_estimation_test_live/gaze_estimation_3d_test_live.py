@@ -67,24 +67,39 @@ while cap.isOpened():
 
             # Determine head orientation
             if y < -10:
-                text = "Looking Left"
+                horizontal = "Looking Left"
             elif y > 10:
-                text = "Looking Right"
-            elif x < -10:
-                text = "Looking Down"
-            elif x > 10:
-                text = "Looking Up"
+                horizontal = "Looking Right"
             else:
-                text = "Looking Forward"
+                horizontal = "Looking Forward"
+                
+            if x < -10:
+                vertical = "Looking Down"
+            elif x > 10:
+                vertical = "Looking Up"
+            else:
+                vertical = "Looking Forward"
+
+            if z < -0.10:
+                tilt = "Tilted Right"
+            elif z > 0.10:
+                tilt = "Tilted Left"
+            else:
+                tilt = "Straight"
+
+            print(y, x, z)
 
             # Draw the annotation on the image
             p1 = (int(nose_2d[0]), int(nose_2d[1]))
             p2 = (int(nose_2d[0] + y * 10), int(nose_2d[1] - x * 10))
 
             cv2.line(frame, p1, p2, (255, 0, 0), 3)
-            cv2.putText(frame, text, (20, 50),
+            cv2.putText(frame, horizontal, (20, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
-            
+            cv2.putText(frame, vertical, (20, 100),            
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
+            cv2.putText(frame, tilt, (20, 150),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
 
     cv2.imshow("Head Pose Estimation", frame)
 
