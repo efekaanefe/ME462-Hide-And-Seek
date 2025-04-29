@@ -47,7 +47,7 @@ class PersonTracker:
         self.face_database = {}  # Permanent storage: {id: {'feature': feature_vector, 'last_seen': timestamp}}
         self.disappear_threshold = 2.0
         self.reid_time_window = 100.0  # Very long to effectively keep all tracks for re-id
-        self.iou_threshold = 0.7  # Minimum IoU for matching consideration
+        # self.iou_threshold = 0.7  # Minimum IoU for matching consideration
         
         # Set distance metric for feature comparison
         self.use_cosine_distance = True  # Default to cosine for ArcFace
