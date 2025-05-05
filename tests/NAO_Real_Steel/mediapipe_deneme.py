@@ -101,6 +101,7 @@ while True:
                 draw_arrow(annotated_image, origin_2d, x_2d, (0, 0, 255), 'X')
                 draw_arrow(annotated_image, origin_2d, y_2d, (0, 255, 0), 'Y')
                 draw_arrow(annotated_image, origin_2d, z_2d, (255, 0, 0), 'Z')
+
             # Sağ kol roll açısı hesaplama
             if hasattr(mp_pose.PoseLandmark, 'RIGHT_ELBOW') and hasattr(mp_pose.PoseLandmark, 'RIGHT_SHOULDER'):
                 r_elbow_2d = landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW]
@@ -124,38 +125,85 @@ while True:
                     # x eksenini at (sadece y-Z düzleminde roll hesapla)
                     proj1 = np.array([0, upper_arm_body[1], upper_arm_body[2]])
                     roll_rad = np.arctan2(proj1[1], proj1[2])
-                    roll_deg = np.degrees(roll_rad)
-                    mapped_roll = (roll_deg + 180) * 76 / 90
+                    r_shoulder_roll = np.degrees(roll_rad)
+                    # adjusting angles for nao
+                    r_shoulder_roll = np.clip(r_shoulder_roll, -170, -90) 
+                    r_shoulder_roll = np.interp(r_shoulder_roll, [-170, -90], [18, -76])
                     
                     # y eksenini at (sadece X-Z düzleminde roll hesapla)
                     proj2 = np.array([upper_arm_body[0],0, upper_arm_body[2]])
                     pitch_rad = np.arctan2(proj2[0], proj2[2])
-                    pitch_deg = np.degrees(pitch_rad)
-                    pitch_deg = (pitch_deg+360)%360
-                    #mapped_roll = (roll_deg + 180) * 76 / 90
-
-                    #print(">>> Right Shoulder Roll: {:.2f}°".format(mapped_roll))
-                    #print(">>> Right Shoulder Pitch: {:.2f}°".format(pitch_deg))
+                    r_shoulder_pitch = np.degrees(pitch_rad)
+                    # adjusting angles for nao
+                    r_shoulder_pitch = np.clip(r_shoulder_pitch, 95, 180) 
+                    r_shoulder_pitch = np.interp(r_shoulder_pitch, [95, 180], [-119.5, 0])
 
                     if r_wrist_3d:
-                        v_shoulder = np.array(r_shoulder_3d)
-                        v_elbow = np.array(r_elbow_3d)
-                        v_wrist = np.array(r_wrist_3d)
+                        r_wrist = np.array(r_wrist_3d)
 
-                        upper_arm = v_shoulder - v_elbow  # Omuz → Dirsek
-                        forearm = v_wrist - v_elbow       # Dirsek → Bilek
+                        upper_arm = r_shoulder - r_elbow  # Omuz → Dirsek
+                        forearm = r_wrist - r_elbow       # Dirsek → Bilek
 
                         upper_arm /= np.linalg.norm(upper_arm)
                         forearm /= np.linalg.norm(forearm)
 
                         dot = np.dot(upper_arm, forearm)
                         angle_rad = np.arccos(np.clip(dot, -1.0, 1.0))
-                        elbow_roll_deg = np.degrees(angle_rad)
-                        mapped_elbow_roll = (elbow_roll_deg - 2) * -88.5 / 90
+                        r_elbow_roll = np.degrees(angle_rad)
+                        # adjusting angles for nao
+                        r_elbow_roll = np.clip(r_elbow_roll, 60, 170) 
+                        r_elbow_roll = np.interp(r_elbow_roll, [60, 170], [88.5, 2])
                         
-                        #print(">>> Elbow Roll: {:.2f}°".format(mapped_elbow_roll))
+                        # print(f"RShoulder_roll : {r_shoulder_roll}")
+                        # print(f"RShoulder_pitch : {r_shoulder_pitch}")
+                        # print(f"RElbow_roll : {r_elbow_roll}")
 
-                        print(f"Shoulder_roll : {mapped_roll} | Shoulder_pitch : {pitch_deg} | Elbow_roll : {mapped_elbow_roll}")
+            # Sol kol roll açısı hesaplama
+            if hasattr(mp_pose.PoseLandmark, 'LEFT_ELBOW') and hasattr(mp_pose.PoseLandmark, 'LEFT_SHOULDER'):
+                l_elbow_2d = landmarks[mp_pose.PoseLandmark.LEFT_ELBOW]
+                l_shoulder_2d = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+                l_wrist_2d = landmarks[mp_pose.PoseLandmark.LEFT_WRIST]
+                l_elbow_3d = pixel_to_world(depth_frame, intrinsics, l_elbow_2d.x * 640, l_elbow_2d.y * 480)
+                l_shoulder_3d = pixel_to_world(depth_frame, intrinsics, l_shoulder_2d.x * 640, l_shoulder_2d.y * 480)
+                l_wrist_3d = pixel_to_world(depth_frame, intrinsics, l_wrist_2d.x * 640, l_wrist_2d.y * 480)
+                if l_elbow_3d and l_shoulder_3d:
+                    l_elbow = np.array(l_elbow_3d)
+                    l_shoulder = np.array(l_shoulder_3d)
+                    upper_arm = l_elbow - l_shoulder  # Üst kol vektörü
+                    # Vücut koordinat sistemine göre dönüşüm (global → body)
+                    R = np.vstack([x_axis, y_axis, z_axis])
+                    upper_arm_body = np.dot(R, upper_arm)
+                    # x eksenini at (sadece y-Z düzleminde roll hesapla)
+                    proj1 = np.array([0, upper_arm_body[1], upper_arm_body[2]])
+                    roll_rad = np.arctan2(proj1[1], proj1[2])
+                    l_shoulder_roll = np.degrees(roll_rad)
+                    # adjusting angles for nao
+                    l_shoulder_roll = np.clip(l_shoulder_roll, 90, 170) 
+                    l_shoulder_roll = np.interp(l_shoulder_roll, [90, 170], [76, -18])
+                    
+                    # y eksenini at (sadece X-Z düzleminde roll hesapla)
+                    proj2 = np.array([upper_arm_body[0], 0, upper_arm_body[2]])
+                    pitch_rad = np.arctan2(proj2[0], proj2[2])
+                    l_shoulder_pitch = np.degrees(pitch_rad)
+                    # adjusting angles for nao
+                    l_shoulder_pitch = np.clip(l_shoulder_pitch, 95, 180) 
+                    l_shoulder_pitch = np.interp(l_shoulder_pitch, [95, 180], [-119.5, 0])
+                    if l_wrist_3d:
+                        l_wrist = np.array(l_wrist_3d)
+                        upper_arm = l_shoulder - l_elbow  # Omuz → Dirsek
+                        forearm = l_wrist - l_elbow       # Dirsek → Bilek
+                        upper_arm /= np.linalg.norm(upper_arm)
+                        forearm /= np.linalg.norm(forearm)
+                        dot = np.dot(upper_arm, forearm)
+                        angle_rad = np.arccos(np.clip(dot, -1.0, 1.0))
+                        l_elbow_roll = np.degrees(angle_rad)
+                        # adjusting angles for nao
+                        l_elbow_roll = np.clip(l_elbow_roll, 60, 170) 
+                        l_elbow_roll = np.interp(l_elbow_roll, [60, 170], [-88.5, -2])
+                        
+                        # print(f"LShoulder_roll : {l_shoulder_roll}")
+                        # print(f"LShoulder_pitch : {l_shoulder_pitch}")
+                        # print(f"LElbow_roll : {l_elbow_roll}")
 
                     # upper_arm_body zaten hazır
                     scale = 0.2
@@ -168,8 +216,6 @@ while True:
 
                     origin_2d = world_to_pixel(intrinsics, origin.tolist())
                     end_2d = world_to_pixel(intrinsics, end.tolist())
-
-                    
 
                     if origin_2d and end_2d:
                         draw_arrow(annotated_image, origin_2d, end_2d, (0, 255, 255), 'UpperArm (Body)')
