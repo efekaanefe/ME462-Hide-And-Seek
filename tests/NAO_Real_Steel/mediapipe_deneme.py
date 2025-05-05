@@ -3,6 +3,12 @@ import mediapipe as mp
 import numpy as np
 import pyrealsense2 as rs
 
+
+# connections
+PORT = 9999
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect(("192.168.68.66", PORT))
+
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(static_image_mode=False, model_complexity=2)
 
@@ -205,6 +211,22 @@ while True:
                         # print(f"LShoulder_pitch : {l_shoulder_pitch}")
                         # print(f"LElbow_roll : {l_elbow_roll}")
 
+
+                        # Try to send data over socket
+                        try:
+                            message = f"({r_shoulder_roll:.2f}, 
+                                         {r_shoulder_pitch:.2f},
+                                         {r_elbow_roll:.2f},
+                                         {l_shoulder_roll:.2f},
+                                         {l_shoulder_pitch:.2f},
+                                         {l_elbow_roll:.2f},
+                                    )\n"
+                            # Uncomment to send over socket
+                            sock.sendall(message.encode())
+                        except (BrokenPipeError, ConnectionResetError):
+                            print("Connection closed.")
+                            break
+
                     # upper_arm_body zaten hazır
                     scale = 0.2
 
@@ -219,7 +241,6 @@ while True:
 
                     if origin_2d and end_2d:
                         draw_arrow(annotated_image, origin_2d, end_2d, (0, 255, 255), 'UpperArm (Body)')
-
 
 
     cv2.imshow("Koordinat Sistemi (Plane-Based)", annotated_image)

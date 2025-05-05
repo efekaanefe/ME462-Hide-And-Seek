@@ -5,7 +5,6 @@ import socket
 
 PORT = 9999
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-# Socket connection is commented out, uncomment when needed
 sock.connect(("192.168.68.66", PORT))
 
 # Initialize MediaPipe Face Mesh
