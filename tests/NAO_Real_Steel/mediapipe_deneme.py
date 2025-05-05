@@ -163,8 +163,9 @@ while True:
                     r_proj2 = np.array([r_upper_arm_body[0], 0, r_upper_arm_body[2]])
                     r_pitch_rad = np.arctan2(r_proj2[0], r_proj2[2])
                     r_shoulder_pitch = np.degrees(r_pitch_rad)
-                    r_shoulder_pitch = np.clip(r_shoulder_pitch, 95, 160) 
-                    r_shoulder_pitch = np.interp(r_shoulder_pitch, [95, 180], [-119.5, 0])
+                    r_shoulder_pitch = (r_shoulder_pitch+360)%360
+                    r_shoulder_pitch = np.clip(r_shoulder_pitch, 95, 170) 
+                    r_shoulder_pitch = np.interp(r_shoulder_pitch, [95, 170], [-119.5, 0])
                     
                     # Elbow roll calculation
                     r_upper_arm_vec = r_shoulder - r_elbow  # Omuz → Dirsek
