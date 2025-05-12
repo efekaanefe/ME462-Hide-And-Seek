@@ -226,6 +226,43 @@ def delete_homography(room_idx, cam_idx):
     except Exception as e:
         print(f"Error: {str(e)}")
 
+def interactive_point_mapping():
+    """
+    Launch the interactive point mapping tool to see correspondences
+    between room and map points in real-time
+    """
+    tool = HomographyTool()
+    
+    try:
+        # Load existing homography matrices
+        tool.load_homography_matrices()
+        
+        if not tool.homography_matrices:
+            print("No saved homography matrices found.")
+            print("You need to create at least one homography matrix first.")
+            return
+        
+        # List available homographies
+        print("\nAvailable homographies:")
+        for key in sorted(tool.homography_matrices.keys()):
+            print(f"- {key}")
+        
+        # Select a homography
+        room_idx = int(input("\nEnter room index: "))
+        cam_idx = int(input("Enter camera index: "))
+        
+        # Launch interactive mapping
+        print("\nLaunching interactive point mapping tool...")
+        print("- Hover over the room image to see the corresponding point on the map")
+        print("- Click to save specific points")
+        print("- Press 'c' to clear saved points")
+        print("- Press 'Esc' or close the window to exit")
+        
+        saved_points = tool.interactive_point_mapping(room_idx, cam_idx)
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
+
 def main():
     print("Homography Tool Demo")
     print("====================\n")
@@ -235,6 +272,7 @@ def main():
     print("3. Add points to an existing homography")
     print("4. Delete a homography")
     print("5. Visualize all cameras for a room")
+    print("6. Interactive point mapping")
     
     try:
         choice = int(input("\nSelect an option: "))
@@ -255,6 +293,8 @@ def main():
             delete_homography(room_idx, cam_idx)
         elif choice == 5:
             visualize_all_cameras_for_room()
+        elif choice == 6:
+            interactive_point_mapping()
         else:
             print("Invalid choice")
     except ValueError:

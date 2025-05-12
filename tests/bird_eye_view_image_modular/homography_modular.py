@@ -577,6 +577,184 @@ class HomographyTool:
             plt.tight_layout()
             plt.show()
 
+    def interactive_point_mapping(self, room_index: int, cam_index: int) -> None:
+        """
+        Interactive tool to visualize room-to-map point correspondences in real-time.
+        As the user hovers over the room image, it shows the corresponding point on the map.
+        
+        Args:
+            room_index: Room index
+            cam_index: Camera index
+        """
+        room = f"room{room_index}"
+        cam = f"cam{cam_index}"
+        key = f"{room}_{cam}"
+        
+        if key not in self.homography_matrices:
+            print(f"No homography matrix found for {key}")
+            return
+        
+        # Select the room and camera to load images
+        self.select_room(room_index)
+        self.select_camera(cam_index)
+        
+        # Get homography matrix
+        H = np.array(self.homography_matrices[key]["matrix"], dtype=np.float32)
+        
+        # Create a figure with two subplots side by side
+        fig, (room_ax, map_ax) = plt.subplots(1, 2, figsize=(14, 7))
+        fig.canvas.manager.set_window_title(f"Interactive Point Mapping: {room}/{cam}")
+        
+        # Display the room image on the left
+        room_ax.imshow(self.cam_image)
+        room_ax.set_title(f"Room Image ({cam})")
+        room_ax.axis('on')
+        
+        # Display the map on the right
+        map_ax.imshow(self.map_image)
+        map_ax.set_title("Map Image")
+        map_ax.axis('on')
+        
+        # Create circle markers that will be updated as the mouse moves
+        room_marker = plt.Circle((0, 0), 10, color='red', fill=False, linewidth=2, visible=False)
+        map_marker = plt.Circle((0, 0), 10, color='red', fill=False, linewidth=2, visible=False)
+        room_ax.add_patch(room_marker)
+        map_ax.add_patch(map_marker)
+        
+        # Text annotations for coordinates
+        room_text = room_ax.text(0, 0, "", color='white', backgroundcolor='black', fontsize=10, visible=False)
+        map_text = map_ax.text(0, 0, "", color='white', backgroundcolor='black', fontsize=10, visible=False)
+        
+        # Status text at the bottom of the figure
+        status_text = fig.text(0.5, 0.01, 
+                "Hover over the room image to see the corresponding point on the map",
+                ha='center', fontsize=12, bbox=dict(facecolor='lightgray', alpha=0.5))
+        
+        # Function to handle mouse motion
+        def on_mouse_move(event):
+            if event.inaxes == room_ax:
+                x, y = int(event.xdata), int(event.ydata)
+                
+                # Show the marker on the room image
+                room_marker.center = (x, y)
+                room_marker.set_visible(True)
+                
+                # Update the room text
+                room_text.set_position((x + 15, y))
+                room_text.set_text(f"({x}, {y})")
+                room_text.set_visible(True)
+                
+                # Calculate the corresponding point on the map using homography
+                map_point = cv2.perspectiveTransform(
+                    np.array([[[x, y]]], dtype=np.float32), 
+                    H
+                )[0][0]
+                
+                map_x, map_y = int(map_point[0]), int(map_point[1])
+                
+                # Show the marker on the map
+                map_marker.center = (map_x, map_y)
+                map_marker.set_visible(True)
+                
+                # Update the map text
+                map_text.set_position((map_x + 15, map_y))
+                map_text.set_text(f"({map_x}, {map_y})")
+                map_text.set_visible(True)
+                
+                # Update the figure
+                fig.canvas.draw_idle()
+            else:
+                # Hide markers when not over the room image
+                room_marker.set_visible(False)
+                map_marker.set_visible(False)
+                room_text.set_visible(False)
+                map_text.set_visible(False)
+                fig.canvas.draw_idle()
+        
+        # Connect the mouse motion event
+        mouse_move_cid = fig.canvas.mpl_connect('motion_notify_event', on_mouse_move)
+        
+        # Function to handle clicks - save specific points if desired
+        saved_points = []
+        
+        def on_mouse_click(event):
+            if event.inaxes == room_ax:
+                x, y = int(event.xdata), int(event.ydata)
+                
+                # Calculate the corresponding point on the map
+                map_point = cv2.perspectiveTransform(
+                    np.array([[[x, y]]], dtype=np.float32), 
+                    H
+                )[0][0]
+                
+                map_x, map_y = int(map_point[0]), int(map_point[1])
+                
+                # Save the point pair
+                saved_points.append({
+                    "room": (x, y),
+                    "map": (map_x, map_y)
+                })
+                
+                # Draw a persistent marker for saved points
+                room_ax.add_patch(plt.Circle((x, y), 8, color='blue', fill=True, alpha=0.6))
+                map_ax.add_patch(plt.Circle((map_x, map_y), 8, color='blue', fill=True, alpha=0.6))
+                
+                # Add a number label
+                point_num = len(saved_points)
+                room_ax.text(x + 10, y, f"{point_num}", color='blue', fontsize=10)
+                map_ax.text(map_x + 10, map_y, f"{point_num}", color='blue', fontsize=10)
+                
+                # Update status text
+                status_text.set_text(f"Saved point {point_num}: Room({x}, {y}) → Map({map_x}, {map_y}) | Click to save more points | Close window when done")
+                
+                # Update the figure
+                fig.canvas.draw_idle()
+        
+        # Connect the mouse click event
+        mouse_click_cid = fig.canvas.mpl_connect('button_press_event', on_mouse_click)
+        
+        # Add custom key handler
+        def on_key(event):
+            if event.key == 'escape':
+                plt.close(fig)
+            elif event.key == 'c':
+                # Clear saved points
+                for ax in [room_ax, map_ax]:
+                    for patch in ax.patches:
+                        if isinstance(patch, plt.Circle) and patch not in [room_marker, map_marker]:
+                            patch.remove()
+                    for txt in ax.texts:
+                        if txt not in [room_text, map_text]:
+                            txt.remove()
+                saved_points.clear()
+                status_text.set_text("Cleared all saved points | Hover over the room image to see the corresponding point on the map")
+                fig.canvas.draw_idle()
+        
+        # Connect key press event
+        key_cid = fig.canvas.mpl_connect('key_press_event', on_key)
+        
+        # Adjust layout and display instructions
+        plt.tight_layout()
+        plt.subplots_adjust(bottom=0.1)  # Make room for the status text
+        
+        # Show the figure
+        plt.show()
+        
+        # Disconnect event handlers
+        fig.canvas.mpl_disconnect(mouse_move_cid)
+        fig.canvas.mpl_disconnect(mouse_click_cid)
+        fig.canvas.mpl_disconnect(key_cid)
+        
+        # Return saved points if any
+        if saved_points:
+            print(f"Saved {len(saved_points)} point pairs:")
+            for i, point in enumerate(saved_points, 1):
+                print(f"{i}. Room: {point['room']} → Map: {point['map']}")
+            
+            return saved_points
+        
+        return None
+
 
 def main():
     # Example usage
