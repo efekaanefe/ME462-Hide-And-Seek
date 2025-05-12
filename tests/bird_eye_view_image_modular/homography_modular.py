@@ -272,15 +272,48 @@ class HomographyTool:
         
         Args:
             output_file: Path to save the JSON file
+            
+        This method will:
+        1. Load existing matrices from the file if it exists
+        2. Update the loaded data with any new matrices (overwriting existing ones with same keys)
+        3. Write the merged data back to the file
         """
         if not self.homography_matrices:
             print("No homography matrices to save")
             return
         
-        with open(output_file, 'w') as f:
-            json.dump(self.homography_matrices, f, indent=4)
+        # Load existing matrices if the file exists
+        existing_matrices = {}
+        if os.path.exists(output_file):
+            try:
+                with open(output_file, 'r') as f:
+                    existing_matrices = json.load(f)
+                print(f"Loaded existing matrices from {output_file}")
+            except json.JSONDecodeError:
+                print(f"Warning: Existing file {output_file} has invalid JSON format. Creating new file.")
+            except Exception as e:
+                print(f"Warning: Could not read existing file {output_file}: {str(e)}. Creating new file.")
         
-        print(f"Saved homography matrices to {output_file}")
+        # Merge existing matrices with new ones (new ones take precedence)
+        merged_matrices = {**existing_matrices, **self.homography_matrices}
+        
+        # Write merged matrices back to file
+        with open(output_file, 'w') as f:
+            json.dump(merged_matrices, f, indent=4)
+        
+        # Update in-memory matrices with the merged result
+        self.homography_matrices = merged_matrices
+        
+        # Report what happened
+        if existing_matrices:
+            num_new = len(self.homography_matrices) - len(existing_matrices)
+            num_updated = len(set(existing_matrices.keys()) & set(self.homography_matrices.keys()))
+            if num_new > 0:
+                print(f"Added {num_new} new homography matrices")
+            if num_updated > 0:
+                print(f"Updated {num_updated} existing homography matrices")
+        else:
+            print(f"Saved {len(self.homography_matrices)} homography matrices to new file {output_file}")
     
     def load_homography_matrices(self, input_file: str = "homography_matrices.json") -> None:
         """
@@ -293,10 +326,18 @@ class HomographyTool:
             print(f"File {input_file} not found")
             return
         
-        with open(input_file, 'r') as f:
-            self.homography_matrices = json.load(f)
-        
-        print(f"Loaded homography matrices from {input_file}")
+        try:
+            with open(input_file, 'r') as f:
+                loaded_matrices = json.load(f)
+            
+            # Merge with any existing matrices (loaded take precedence)
+            self.homography_matrices = {**self.homography_matrices, **loaded_matrices}
+            
+            print(f"Loaded {len(loaded_matrices)} homography matrices from {input_file}")
+        except json.JSONDecodeError:
+            print(f"Error: File {input_file} contains invalid JSON data")
+        except Exception as e:
+            print(f"Error loading file {input_file}: {str(e)}")
     
     def visualize_homography(self, room_index: int, cam_index: int) -> None:
         """
