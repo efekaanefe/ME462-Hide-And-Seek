@@ -394,6 +394,188 @@ class HomographyTool:
         
         plt.tight_layout()
         plt.show()
+        
+    def visualize_all_cameras(self, room_index: int) -> None:
+        """
+        Visualize homography projections from all cameras in a room blended together
+        
+        Args:
+            room_index: Room index
+        """
+        room = f"room{room_index}"
+        
+        # Select the room to load the map image
+        try:
+            self.select_room(room_index)
+        except Exception as e:
+            print(f"Error selecting room: {str(e)}")
+            return
+        
+        # Find all cameras for this room in the homography matrices
+        room_cameras = [key for key in self.homography_matrices.keys() if key.startswith(room)]
+        
+        if not room_cameras:
+            print(f"No homography matrices found for {room}")
+            return
+        
+        print(f"Found {len(room_cameras)} camera(s) with homography matrices for {room}")
+        
+        # Create a base map for blending (convert to float for better blending)
+        base_map = self.map_image.copy().astype(np.float32) / 255.0
+        
+        # Create individual warped images for each camera
+        warped_images = []
+        camera_names = []
+        
+        # Process each camera
+        for key in room_cameras:
+            cam_name = key.split('_')[1]  # Extract camera name from key (e.g., "cam0")
+            cam_idx = int(cam_name.replace("cam", ""))
+            camera_names.append(cam_name)
+            
+            try:
+                # Load the camera image
+                self.select_camera(cam_idx)
+                
+                # Get homography matrix
+                H = np.array(self.homography_matrices[key]["matrix"], dtype=np.float32)
+                
+                # Warp camera image to map perspective - convert to float for better blending
+                warped = cv2.warpPerspective(
+                    self.cam_image.astype(np.float32) / 255.0, 
+                    H, 
+                    (self.map_image.shape[1], self.map_image.shape[0])
+                )
+                
+                # Store the warped image
+                warped_images.append(warped)
+                
+            except Exception as e:
+                print(f"Error processing {cam_name}: {str(e)}")
+        
+        # Plot the results
+        if warped_images:
+            # Create a properly blended image - blend all camera views first
+            n_cameras = len(warped_images)
+            
+            # Start with a black image where camera pixels will be added
+            camera_blend = np.zeros_like(base_map)
+            
+            # Create masks to track where camera pixels have been added
+            camera_mask = np.zeros((base_map.shape[0], base_map.shape[1]), dtype=np.float32)
+            
+            # Add each camera to the blend
+            for i, warped in enumerate(warped_images):
+                # Create a mask for non-zero (actual camera view) pixels
+                current_mask = np.any(warped > 0.05, axis=2).astype(np.float32)
+                
+                # Add this camera's pixels to the blend
+                camera_blend += warped * np.stack([current_mask, current_mask, current_mask], axis=2)
+                
+                # Add to the mask
+                camera_mask += current_mask
+            
+            # Avoid division by zero
+            camera_mask = np.maximum(camera_mask, 1e-5)
+            
+            # Normalize by the number of cameras that contribute to each pixel
+            camera_blend /= np.stack([camera_mask, camera_mask, camera_mask], axis=2)
+            
+            # Now blend the combined cameras with the map
+            alpha_map = 0.3  # Map visibility
+            alpha_cams = 0.7  # Cameras visibility
+            blended = alpha_map * base_map + alpha_cams * camera_blend
+            
+            # Ensure pixel values are in valid range
+            blended = np.clip(blended, 0, 1)
+            
+            # Convert back to uint8 for display
+            blended_uint8 = (blended * 255).astype(np.uint8)
+            
+            # Convert individual warped images back to uint8
+            warped_uint8 = [(w * 255).astype(np.uint8) for w in warped_images]
+            map_uint8 = (base_map * 255).astype(np.uint8)
+            
+            # Determine grid size based on number of cameras
+            grid_size = int(np.ceil(np.sqrt(n_cameras + 2)))  # +2 for map and final blend
+            
+            plt.figure(figsize=(15, 10))
+            
+            # Plot map image
+            plt.subplot(grid_size, grid_size, 1)
+            plt.imshow(map_uint8)
+            plt.title("Map Image")
+            
+            # Plot each warped camera image
+            for i, (warped, cam_name) in enumerate(zip(warped_uint8, camera_names)):
+                plt.subplot(grid_size, grid_size, i + 2)
+                plt.imshow(warped)
+                plt.title(f"Warped {cam_name}")
+            
+            # Plot final blended result
+            plt.subplot(grid_size, grid_size, len(warped_uint8) + 2)
+            plt.imshow(blended_uint8)
+            plt.title("All Cameras Blended")
+            
+            plt.tight_layout()
+            plt.show()
+            
+            # Also show a full-screen version of the final blend with a color bar
+            plt.figure(figsize=(12, 10))
+            plt.imshow(blended_uint8)
+            plt.title(f"All {len(warped_uint8)} Cameras Blended - {room}")
+            plt.axis('off')
+            plt.tight_layout()
+            plt.show()
+            
+            # Create a visualization with colored camera coverage
+            plt.figure(figsize=(12, 10))
+            
+            # Start with a grayscale map
+            gray_map = cv2.cvtColor(self.map_image, cv2.COLOR_RGB2GRAY)
+            colored_visualization = np.stack([gray_map, gray_map, gray_map], axis=2)
+            
+            # Assign different colors to each camera
+            colors = [
+                [255, 0, 0],   # Red
+                [0, 255, 0],   # Green
+                [0, 0, 255],   # Blue
+                [255, 255, 0], # Yellow
+                [255, 0, 255], # Magenta
+                [0, 255, 255], # Cyan
+                [255, 128, 0], # Orange
+                [128, 0, 255]  # Purple
+            ]
+            
+            # Create a colored visualization
+            for i, warped in enumerate(warped_images):
+                # Get a color for this camera
+                color = colors[i % len(colors)]
+                
+                # Create a mask for non-zero pixels
+                mask = np.any(warped > 0.05, axis=2).astype(np.float32)
+                
+                # Add colored overlay
+                for c in range(3):
+                    colored_visualization[:, :, c] = np.where(
+                        mask > 0,
+                        colored_visualization[:, :, c] * 0.5 + color[c] * 0.5 * mask,
+                        colored_visualization[:, :, c]
+                    )
+            
+            # Display the colored visualization
+            plt.imshow(colored_visualization.astype(np.uint8))
+            plt.title(f"Camera Coverage Map - {room}")
+            
+            # Add a legend
+            for i, cam_name in enumerate(camera_names):
+                color = colors[i % len(colors)]
+                plt.plot([], [], 's', color=[c/255 for c in color], label=cam_name)
+            
+            plt.legend(loc='upper right')
+            plt.axis('off')
+            plt.tight_layout()
+            plt.show()
 
 
 def main():

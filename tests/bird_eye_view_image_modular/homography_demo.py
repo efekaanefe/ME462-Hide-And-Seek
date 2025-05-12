@@ -34,6 +34,41 @@ def visualize_saved_homographies():
     except Exception as e:
         print(f"Error: {str(e)}")
 
+def visualize_all_cameras_for_room():
+    """
+    Visualize all cameras for a specific room blended together
+    """
+    tool = HomographyTool()
+    
+    # Load previously saved homography matrices
+    try:
+        tool.load_homography_matrices()
+        
+        if not tool.homography_matrices:
+            print("No saved homography matrices found.")
+            return
+        
+        # Get unique rooms
+        rooms = set()
+        for key in tool.homography_matrices.keys():
+            room_name = key.split('_')[0]  # Extract room name (e.g., "room0")
+            rooms.add(room_name)
+        
+        # Show available rooms
+        print("\nAvailable rooms:")
+        for room in sorted(rooms):
+            # Count cameras for this room
+            cameras = [k for k in tool.homography_matrices.keys() if k.startswith(room)]
+            print(f"- {room} ({len(cameras)} cameras)")
+        
+        # Select a room to visualize
+        room_idx = int(input("\nEnter room index: "))
+        
+        # Visualize all cameras for the selected room
+        tool.visualize_all_cameras(room_idx)
+    except Exception as e:
+        print(f"Error: {str(e)}")
+
 def create_homography_for_new_camera(room_idx, cam_idx):
     """
     Create a new homography for a specific room and camera
@@ -85,6 +120,14 @@ def create_homography_for_new_camera(room_idx, cam_idx):
             visualize = input("\nDo you want to visualize the homography? (y/n): ")
             if visualize.lower() == 'y':
                 tool.visualize_homography(room_idx, cam_idx)
+                
+            # If this room has multiple cameras, offer to visualize all cameras
+            room_key = f"room{room_idx}"
+            camera_count = sum(1 for key in tool.homography_matrices.keys() if key.startswith(room_key))
+            if camera_count > 1:
+                visualize_all = input(f"\nThis room has {camera_count} cameras with homography matrices. Do you want to visualize all of them blended? (y/n): ")
+                if visualize_all.lower() == 'y':
+                    tool.visualize_all_cameras(room_idx)
         else:
             print("Failed to calculate homography matrix")
     except Exception as e:
@@ -140,6 +183,14 @@ def add_new_points_to_existing_homography(room_idx, cam_idx):
             visualize = input("\nDo you want to visualize the updated homography? (y/n): ")
             if visualize.lower() == 'y':
                 tool.visualize_homography(room_idx, cam_idx)
+                
+            # If this room has multiple cameras, offer to visualize all cameras
+            room_key = f"room{room_idx}"
+            camera_count = sum(1 for key in tool.homography_matrices.keys() if key.startswith(room_key))
+            if camera_count > 1:
+                visualize_all = input(f"\nThis room has {camera_count} cameras with homography matrices. Do you want to visualize all of them blended? (y/n): ")
+                if visualize_all.lower() == 'y':
+                    tool.visualize_all_cameras(room_idx)
         else:
             print("Failed to update homography matrix")
     except Exception as e:
@@ -183,6 +234,7 @@ def main():
     print("2. Create homography for a new camera")
     print("3. Add points to an existing homography")
     print("4. Delete a homography")
+    print("5. Visualize all cameras for a room")
     
     try:
         choice = int(input("\nSelect an option: "))
@@ -201,6 +253,8 @@ def main():
             room_idx = int(input("Enter room index: "))
             cam_idx = int(input("Enter camera index: "))
             delete_homography(room_idx, cam_idx)
+        elif choice == 5:
+            visualize_all_cameras_for_room()
         else:
             print("Invalid choice")
     except ValueError:
