@@ -853,6 +853,7 @@ class PersonOrientationDetector:
             
         # Load image
         image = cv2.imread(image_path)
+        image = cv2.resize(image, (1200, 1600))
         if image is None:
             print(f"Error: Could not load image from {image_path}")
             print(f"Working directory: {os.getcwd()}")
@@ -941,7 +942,8 @@ def main():
     cam_index = 0
     
     # Get input image
-    image_path = "test_images/test.jpeg"
+    image_path = "test_images/test2.png"
+    # image_path = "test_images/test.jpeg"
     print(f"Using image: {image_path}")
     print(f"Room: {room_index}, Camera: {cam_index}")
     
