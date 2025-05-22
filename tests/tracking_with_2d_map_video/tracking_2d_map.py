@@ -99,6 +99,14 @@ def main():
                 center_x = (bbox[0] + bbox[2]) / 2
                 center_y = bbox[3]  # Use bottom center as foot position
 
+                # Find matching person from orientation detector
+                matching_person = None
+                for person in people:
+                    if (abs(person["bbox"][0] - bbox[0]) < 10 and 
+                        abs(person["bbox"][1] - bbox[1]) < 10):
+                        matching_person = person
+                        break
+
                 # Map to 2D coordinates
                 try:
                     mapped_point = cv2.perspectiveTransform(
@@ -106,11 +114,29 @@ def main():
                         np.array(homography_tool.homography_matrices[f"room{room_index}_cam{cam_index}"]["matrix"])
                     )[0][0]
 
+                    # Get orientation if available
+                    orientation = None
+                    if matching_person and "orientation" in matching_person:
+                        # Transform orientation to map coordinates
+                        dx, dy = np.cos(matching_person["orientation"]), np.sin(matching_person["orientation"])
+                        cam_dir_point = (center_x + dx * 20, center_y + dy * 20)
+                        
+                        # Transform direction point to map coordinates
+                        map_dir_point = cv2.perspectiveTransform(
+                            np.array([[[cam_dir_point[0], cam_dir_point[1]]]], dtype=np.float32),
+                            np.array(homography_tool.homography_matrices[f"room{room_index}_cam{cam_index}"]["matrix"])
+                        )[0][0]
+                        
+                        # Calculate orientation in map coordinates
+                        map_dx, map_dy = map_dir_point[0] - mapped_point[0], map_dir_point[1] - mapped_point[1]
+                        orientation = np.arctan2(map_dy, map_dx)
+
                     mapped_people.append({
                         "track_id": track_id,
                         "name": track_data.get('name', 'Unknown'),
                         "position": (mapped_point[0], mapped_point[1]),
-                        "bbox": bbox
+                        "bbox": bbox,
+                        "orientation": orientation
                     })
                 except Exception as e:
                     print(f"Error mapping point: {e}")
@@ -121,6 +147,7 @@ def main():
             name = person["name"]
             bbox = person["bbox"]
             map_pos = person["position"]
+            orientation = person.get("orientation")
 
             # Draw bounding box
             cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), 
@@ -136,21 +163,45 @@ def main():
             cv2.putText(frame, coord_text, (int(bbox[0]), int(bbox[3] + 20)),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            # Draw position on map
+            # Draw orientation if available
+            if orientation is not None:
+                # Draw orientation arrow on frame
+                center_x = (bbox[0] + bbox[2]) / 2
+                center_y = bbox[3]
+                arrow_length = 30
+                dx = int(arrow_length * np.cos(orientation))
+                dy = int(arrow_length * np.sin(orientation))
+                cv2.arrowedLine(frame, (int(center_x), int(center_y)),
+                              (int(center_x + dx), int(center_y + dy)),
+                              (0, 0, 255), 2)
+
+            # Draw position and orientation on map
             map_copy = map_img.copy()
             # Scale map coordinates to map image size
             map_x = int(map_pos[0] * map_img.shape[1] / 1000)  # Assuming map coordinates are in 0-1000 range
             map_y = int(map_pos[1] * map_img.shape[0] / 1000)
+            
+            # Draw person circle
             cv2.circle(map_copy, (map_x, map_y), 5, (0, 0, 255), -1)
             cv2.putText(map_copy, f"ID: {track_id}", (map_x + 5, map_y - 5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
-            # Publish coordinates to MQTT
+            # Draw orientation arrow on map if available
+            if orientation is not None:
+                arrow_length = 15
+                dx = int(arrow_length * np.cos(orientation))
+                dy = int(arrow_length * np.sin(orientation))
+                cv2.arrowedLine(map_copy, (map_x, map_y),
+                              (map_x + dx, map_y + dy),
+                              (0, 255, 0), 2)
+
+            # Publish coordinates and orientation to MQTT
             position_data = {
                 "track_id": track_id,
                 "name": name,
                 "x": float(map_pos[0]),
                 "y": float(map_pos[1]),
+                "orientation": float(orientation) if orientation is not None else None,
                 "timestamp": current_time
             }
             publisher.publish(f"game/player/position/{track_id}", str(position_data), qos=1)
