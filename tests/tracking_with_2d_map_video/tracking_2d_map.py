@@ -22,6 +22,11 @@ def main():
     video_path = "test-home2.mp4"  # Path to your video file
     output_path = "output_tracking.mp4"  # Path to save the output video
 
+    # Load 2D map
+    map_path = f"rooms_database/room{room_index}/2Dmap.png"
+    map_img = cv2.imread(map_path)
+    map_img = cv2.resize(map_img, (300, 300))
+
     # Load homography matrices
     homography_tool.load_homography_matrices("homography_matrices.json")
 
@@ -42,7 +47,8 @@ def main():
 
     # Create video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+    #out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+    out = cv2.VideoWriter(output_path, fourcc, fps, (1600, 1200))
 
     # Initialize visualization window
     cv2.namedWindow("Tracking", cv2.WINDOW_NORMAL)
@@ -126,6 +132,20 @@ def main():
             coord_text = f"Map: ({int(map_pos[0])}, {int(map_pos[1])})"
             cv2.putText(frame, coord_text, (int(bbox[0]), int(bbox[3] + 20)),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+            # Draw position on map
+            map_copy = map_img.copy()
+            # Scale map coordinates to map image size
+            map_x = int(map_pos[0] * map_img.shape[1] / 1000)  # Assuming map coordinates are in 0-1000 range
+            map_y = int(map_pos[1] * map_img.shape[0] / 1000)
+            cv2.circle(map_copy, (map_x, map_y), 5, (0, 0, 255), -1)
+            cv2.putText(map_copy, f"ID: {track_id}", (map_x + 5, map_y - 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+        # Overlay map on frame
+        map_overlay = np.zeros_like(frame)
+        map_overlay[10:10+map_img.shape[0], 10:10+map_img.shape[1]] = map_copy
+        frame = cv2.addWeighted(frame, 1, map_overlay, 0.7, 0)
 
         # Write frame to output video
         out.write(frame)
