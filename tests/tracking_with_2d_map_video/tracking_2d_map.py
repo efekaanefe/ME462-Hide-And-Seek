@@ -9,6 +9,7 @@ from homography_modular import HomographyTool
 
 from people_tracking import PersonTracker
 
+from MQTTPublisher import MQTTPublisher
 
 def main():
     # Initialize the tools
@@ -16,6 +17,10 @@ def main():
     orientation_detector = PersonOrientationDetector()
     person_tracker = PersonTracker()
 
+    # MQTT
+    publisher = MQTTPublisher(broker_address="mqtt.eclipseprojects.io")
+    publisher.connect()
+    
     # Configuration
     room_index = 0  # Room index to use
     cam_index = 0   # Camera index to use
@@ -141,6 +146,16 @@ def main():
             cv2.circle(map_copy, (map_x, map_y), 5, (0, 0, 255), -1)
             cv2.putText(map_copy, f"ID: {track_id}", (map_x + 5, map_y - 5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+            # Publish coordinates to MQTT
+            position_data = {
+                "track_id": track_id,
+                "name": name,
+                "x": float(map_pos[0]),
+                "y": float(map_pos[1]),
+                "timestamp": current_time
+            }
+            publisher.publish(f"game/player/position/{track_id}", str(position_data), qos=1)
 
         # Overlay map on frame
         map_overlay = np.zeros_like(frame)
