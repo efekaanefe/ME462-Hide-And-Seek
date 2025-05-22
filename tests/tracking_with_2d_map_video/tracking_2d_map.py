@@ -116,8 +116,26 @@ def main():
 
                     # Get orientation if available
                     orientation = None
+                    
+                    # Calculate movement-based orientation from tracking history
+                    movement_orientation = None
+                    if 'history' in track_data and len(track_data['history']) >= 2:
+                        # Get last two positions from history
+                        prev_pos = track_data['history'][-2]
+                        curr_pos = track_data['history'][-1]
+                        
+                        # Calculate movement vector
+                        dx = curr_pos[0] - prev_pos[0]
+                        dy = curr_pos[1] - prev_pos[1]
+                        
+                        # Only use movement if it's significant enough
+                        movement_magnitude = np.sqrt(dx*dx + dy*dy)
+                        if movement_magnitude > 1:  # Minimum movement threshold
+                            movement_orientation = np.arctan2(dy, dx)
+
+                    # Combine MediaPipe orientation with movement-based orientation
                     if matching_person and "orientation" in matching_person:
-                        # Transform orientation to map coordinates
+                        # Transform MediaPipe orientation to map coordinates
                         dx, dy = np.cos(matching_person["orientation"]), np.sin(matching_person["orientation"])
                         cam_dir_point = (center_x + dx * 20, center_y + dy * 20)
                         
@@ -129,14 +147,36 @@ def main():
                         
                         # Calculate orientation in map coordinates
                         map_dx, map_dy = map_dir_point[0] - mapped_point[0], map_dir_point[1] - mapped_point[1]
-                        orientation = np.arctan2(map_dy, map_dx)
+                        mediapipe_orientation = np.arctan2(map_dy, map_dx)
+
+                        # Combine orientations if both are available
+                        if movement_orientation is not None:
+                            # Weight the orientations (adjust weights as needed)
+                            mediapipe_weight = 0.0
+                            movement_weight = 1.0
+                            
+                            # Calculate weighted average of orientations
+                            # Use complex numbers for proper angle averaging
+                            mediapipe_complex = np.exp(1j * mediapipe_orientation)
+                            movement_complex = np.exp(1j * movement_orientation)
+                            
+                            combined_complex = (mediapipe_weight * mediapipe_complex + 
+                                              movement_weight * movement_complex)
+                            orientation = np.angle(combined_complex)
+                        else:
+                            orientation = mediapipe_orientation
+                    elif movement_orientation is not None:
+                        # Use movement-based orientation if MediaPipe orientation is not available
+                        orientation = movement_orientation
 
                     mapped_people.append({
                         "track_id": track_id,
                         "name": track_data.get('name', 'Unknown'),
                         "position": (mapped_point[0], mapped_point[1]),
                         "bbox": bbox,
-                        "orientation": orientation
+                        "orientation": orientation,
+                        "mediapipe_orientation": matching_person["orientation"] if matching_person and "orientation" in matching_person else None,
+                        "movement_orientation": movement_orientation
                     })
                 except Exception as e:
                     print(f"Error mapping point: {e}")
@@ -148,6 +188,8 @@ def main():
             bbox = person["bbox"]
             map_pos = person["position"]
             orientation = person.get("orientation")
+            mediapipe_orientation = person.get("mediapipe_orientation")
+            movement_orientation = person.get("movement_orientation")
 
             # Draw bounding box
             cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), 
@@ -165,7 +207,7 @@ def main():
 
             # Draw orientation if available
             if orientation is not None:
-                # Draw orientation arrow on frame
+                # Draw combined orientation arrow on frame (red)
                 center_x = (bbox[0] + bbox[2]) / 2
                 center_y = bbox[3]
                 arrow_length = 30
@@ -174,6 +216,22 @@ def main():
                 cv2.arrowedLine(frame, (int(center_x), int(center_y)),
                               (int(center_x + dx), int(center_y + dy)),
                               (0, 0, 255), 2)
+
+                # Draw MediaPipe orientation if available (blue)
+                if mediapipe_orientation is not None:
+                    dx = int(arrow_length * np.cos(mediapipe_orientation))
+                    dy = int(arrow_length * np.sin(mediapipe_orientation))
+                    cv2.arrowedLine(frame, (int(center_x), int(center_y)),
+                                  (int(center_x + dx), int(center_y + dy)),
+                                  (255, 0, 0), 1)
+
+                # Draw movement orientation if available (green)
+                if movement_orientation is not None:
+                    dx = int(arrow_length * np.cos(movement_orientation))
+                    dy = int(arrow_length * np.sin(movement_orientation))
+                    cv2.arrowedLine(frame, (int(center_x), int(center_y)),
+                                  (int(center_x + dx), int(center_y + dy)),
+                                  (0, 255, 0), 1)
 
             # Draw position and orientation on map
             map_copy = map_img.copy()
