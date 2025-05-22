@@ -7,6 +7,8 @@ from homography_modular import HomographyTool
 from typing import List, Dict, Tuple, Optional, Any
 import mediapipe as mp
 
+YOLO_CONFIDENCE_THRESHOLD = 0.7 # TODO: create a config file 
+
 class PersonOrientationDetector:
     def __init__(self, homography_file: str = "homography_matrices.json"):
         """
@@ -202,7 +204,7 @@ class PersonOrientationDetector:
                         conf = float(detections.conf[i])
                         
                         # Add detection if confidence is high enough
-                        if conf > 0.3:  # Adjust threshold as needed
+                        if conf > YOLO_CONFIDENCE_THRESHOLD:  # Adjust threshold as needed
                             boxes.append((x1, y1, w, h, conf))
                 
                 print(f"YOLOv8 detected {len(boxes)} people")

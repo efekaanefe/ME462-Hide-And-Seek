@@ -1,13 +1,11 @@
 import cv2
 import numpy as np
 import time
-import sys
-from pathlib import Path
 
 from orientation_test_2D import PersonOrientationDetector
 from homography_modular import HomographyTool
 
-from people_tracking import PersonTracker
+from tracker import PersonTracker
 
 from MQTTPublisher import MQTTPublisher
 
