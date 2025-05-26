@@ -490,16 +490,7 @@ class PersonOrientationDetector:
         # Default orientation (facing down)
         orientation = None
         
-        # Constants for direction weights
-        DIRECTION_WEIGHT_NOSE = 0.05    # Weight given to nose direction (0-1)
-        DIRECTION_WEIGHT_SHOULDERS = 0.2 # Weight given to shoulder perpendicular (0-1)
-        DIRECTION_WEIGHT_FEET = 0.7     # Weight given to feet direction (0-1)
-
-        DIRECTION_WEIGHT_NOSE = 0.0   
-        DIRECTION_WEIGHT_SHOULDERS = 0.2 
-        DIRECTION_WEIGHT_FEET = 0.8
-
-        
+   
         if self.use_depth_orientation:
             # Try to calculate orientation using shoulder-hip plane with 3D points
             if (LEFT_SHOULDER in key_points_3d and RIGHT_SHOULDER in key_points_3d and 
@@ -571,6 +562,18 @@ class PersonOrientationDetector:
                                   (255, 0, 0), 2)
 
         else:
+
+
+            # Constants for direction weights
+            DIRECTION_WEIGHT_NOSE = 0.05    # Weight given to nose direction (0-1)
+            DIRECTION_WEIGHT_SHOULDERS = 0.2 # Weight given to shoulder perpendicular (0-1)
+            DIRECTION_WEIGHT_FEET = 0.7     # Weight given to feet direction (0-1)
+
+            DIRECTION_WEIGHT_NOSE = 0.2
+            DIRECTION_WEIGHT_SHOULDERS = 0.4
+            DIRECTION_WEIGHT_FEET = 0.8
+
+        
             # Use 2D landmarks for weighted orientation estimation
             direction_vectors = []
             direction_weights = []
@@ -614,14 +617,20 @@ class PersonOrientationDetector:
             # Vector 2: Nose direction (strongest indicator for front/back view)
             if NOSE in key_points and shoulder_midpoint is not None and landmarks[NOSE].visibility > NOSE_VISIBILITY_THRESHOLD:
                 nose_vector = key_points[NOSE] - shoulder_midpoint
-                # Project to horizontal plane
-                nose_vector = np.array([nose_vector[0], 0])
+                # Keep both x and y components for proper orientation
+                nose_vector = np.array([nose_vector[0], nose_vector[1]])
                 
                 # Normalize the vector
                 norm = np.linalg.norm(nose_vector)
                 if norm > 0:
                     nose_vector = nose_vector / norm
-                    direction_vectors.append(nose_vector)
+                    
+                    # Determine if nose vector should point forward or backward
+                    # If nose is above shoulders, it's likely facing forward
+                    if key_points[NOSE][1] < shoulder_midpoint[1]:
+                        direction_vectors.append(-nose_vector)  # Flip the direction
+                    else:
+                        direction_vectors.append(nose_vector)   # Keep original direction
                     direction_weights.append(DIRECTION_WEIGHT_NOSE)
             
             # Vector 3: Feet orientation (useful for determining walking direction)
