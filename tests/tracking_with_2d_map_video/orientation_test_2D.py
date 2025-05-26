@@ -43,13 +43,13 @@ class DepthEstimator:
         return depth_map
 
 class KalmanFilter:
-    def __init__(self, process_variance=1e-4, measurement_variance=1e-2):
+    def __init__(self, process_variance=5e-9, measurement_variance=1):
         """
         Initialize Kalman filter for orientation smoothing.
         
         Args:
-            process_variance: Variance of the process noise
-            measurement_variance: Variance of the measurement noise
+            process_variance: Variance of the process noise (smaller = smoother changes)
+            measurement_variance: Variance of the measurement noise (larger = less trust in measurements)
         """
         # State transition matrix (1x1 for orientation)
         self.A = np.array([[1.0]])
@@ -57,10 +57,10 @@ class KalmanFilter:
         # Measurement matrix (1x1 for orientation)
         self.H = np.array([[1.0]])
         
-        # Process noise covariance
+        # Process noise covariance (expect very smooth changes in orientation)
         self.Q = np.array([[process_variance]])
         
-        # Measurement noise covariance
+        # Measurement noise covariance (less trust in measurements due to jitter)
         self.R = np.array([[measurement_variance]])
         
         # Initial state estimate
@@ -986,8 +986,8 @@ class PersonOrientationDetector:
                 # Draw key points
                 for idx, landmark in enumerate(landmarks):
                     if landmark.visibility > 0.5:
-                        point_x = int(landmark.x * orig_width + x_offset)
-                        point_y = int(landmark.y * orig_height + y_offset)
+                        point_x = int(landmarks[idx].x * orig_width + x_offset)
+                        point_y = int(landmarks[idx].y * orig_height + y_offset)
                         cv2.circle(vis_image, (point_x, point_y), 4, pose_color, -1)
                         
             except Exception as e:
