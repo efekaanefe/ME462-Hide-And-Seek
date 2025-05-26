@@ -418,6 +418,11 @@ class PersonOrientationDetector:
         DIRECTION_WEIGHT_NOSE = 0.05    # Weight given to nose direction (0-1)
         DIRECTION_WEIGHT_SHOULDERS = 0.2 # Weight given to shoulder perpendicular (0-1)
         DIRECTION_WEIGHT_FEET = 0.7     # Weight given to feet direction (0-1)
+
+        DIRECTION_WEIGHT_NOSE = 0.0   
+        DIRECTION_WEIGHT_SHOULDERS = -0.2 
+        DIRECTION_WEIGHT_FEET = 0.9
+
         
         if self.use_depth_orientation:
             # Try to calculate orientation using shoulder-hip plane with 3D points
@@ -585,7 +590,7 @@ class PersonOrientationDetector:
             if direction_vectors:
                 # Normalize weights
                 total_weight = sum(direction_weights)
-                if total_weight > 0:
+                if np.abs(total_weight) > 0:
                     norm_weights = [w / total_weight for w in direction_weights]
                     
                     # Calculate weighted average direction
@@ -824,7 +829,7 @@ class PersonOrientationDetector:
             # Draw x-axis (red)
             x_end_x = int(bbox_center_x + axis_length * np.cos(orientation))
             x_end_y = int(bbox_center_y + axis_length * np.sin(orientation))
-            cv2.arrowedLine(vis_image, (bbox_center_x, bbox_center_y), (x_end_x, x_end_y), (0, 0, 255), 2)
+            cv2.arrowedLine(vis_image, (bbox_center_x, bbox_center_y), (x_end_x, x_end_y), (255, 0, 0), 2)
             
             # Draw y-axis (green) - perpendicular to x-axis
             y_end_x = int(bbox_center_x + axis_length * np.cos(orientation + np.pi/2))
@@ -834,7 +839,7 @@ class PersonOrientationDetector:
             # Draw z-axis (blue) - perpendicular to both x and y
             z_end_x = int(bbox_center_x + axis_length * np.cos(orientation + np.pi))
             z_end_y = int(bbox_center_y + axis_length * np.sin(orientation + np.pi))
-            cv2.arrowedLine(vis_image, (bbox_center_x, bbox_center_y), (z_end_x, z_end_y), (255, 0, 0), 2)
+            cv2.arrowedLine(vis_image, (bbox_center_x, bbox_center_y), (z_end_x, z_end_y), (0, 0, 255), 2)
         
         # Now draw pose skeleton for each person
         for i, person in enumerate(people):
@@ -1088,7 +1093,7 @@ def main():
     homography_file = "homography_matrices.json"
     
     # Initialize the detector
-    detector = PersonOrientationDetector(homography_file)
+    detector = PersonOrientationDetector(homography_file, use_depth_orientation = False)
     
     # Get room and camera info
     room_index = 0

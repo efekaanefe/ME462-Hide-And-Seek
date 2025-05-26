@@ -228,7 +228,7 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
             cv2.circle(map_copy, (map_x, map_y), 5, (0, 0, 255), -1)
             cv2.putText(map_copy, f"ID: {track_id}", (map_x + 5, map_y - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-
+            
             # Draw orientation arrow on map if available
             if orientation is not None:
                 arrow_length = 15
@@ -285,7 +285,7 @@ def main():
         cam_index=0,
         headless=False,  # Set to True for headless mode
         show_fps=True,   # Set to False to hide FPS
-        use_depth_orientation=True
+        use_depth_orientation=False
     )
 
 if __name__ == "__main__":
