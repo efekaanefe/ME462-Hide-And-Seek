@@ -6,16 +6,50 @@ import matplotlib.patches as patches
 from homography_modular import HomographyTool
 from typing import List, Dict, Tuple, Optional, Any
 import mediapipe as mp
+import torch
+import torch.nn.functional as F
+import time
 
-YOLO_CONFIDENCE_THRESHOLD = 0.7 # TODO: create a config file 
+YOLO_CONFIDENCE_THRESHOLD = 0.9 # TODO: create a config file 
+
+class DepthEstimator:
+    def __init__(self, model_type="MiDaS_small"): 
+        # Load MiDaS
+        self.midas = torch.hub.load("intel-isl/MiDaS", model_type)
+        self.midas.eval()
+
+        # Setup device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.midas.to(self.device)
+
+        # Use appropriate transform
+        midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+        self.transform = midas_transforms.dpt_transform
+
+    def predict(self, frame):
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        input_batch = self.transform(img).to(self.device)
+
+        with torch.no_grad():
+            prediction = self.midas(input_batch)
+            prediction = torch.nn.functional.interpolate(
+                prediction.unsqueeze(1),
+                size=img.shape[:2],
+                mode="bicubic",
+                align_corners=False
+            ).squeeze()
+
+        depth_map = prediction.cpu().numpy()
+        return depth_map
 
 class PersonOrientationDetector:
-    def __init__(self, homography_file: str = "homography_matrices.json"):
+    def __init__(self, homography_file: str = "homography_matrices.json", use_depth_orientation: bool = True):
         """
         Initialize the person orientation detector.
         
         Args:
             homography_file: Path to the homography matrices JSON file
+            use_depth_orientation: Whether to use depth-based orientation estimation
         """
         self.homography_tool = HomographyTool()
         self.homography_tool.load_homography_matrices(homography_file)
@@ -23,6 +57,9 @@ class PersonOrientationDetector:
         self.pose_detector = None
         self.mp_pose_landmarker = None
         self.yolo_model = None
+        self.use_depth_orientation = use_depth_orientation
+        self.depth_estimator = DepthEstimator("MiDaS_small") if use_depth_orientation else None
+        self.current_frame = None
         self.initialize_models()
         
     def initialize_models(self) -> None:
@@ -262,7 +299,7 @@ class PersonOrientationDetector:
                 
                 # Process landmarks to get orientation and position
                 # Note: we pass the original landmarks object for visualization
-                person_data = self._process_landmarks(landmarks, w, h, results.pose_landmarks)
+                person_data = self._process_landmarks(landmarks, w, h, results.pose_landmarks, (0, 0), image)
                 
                 if person_data:
                     people.append(person_data)
@@ -298,18 +335,17 @@ class PersonOrientationDetector:
         # Get the offset from the original image
         x_offset, y_offset = full_bbox[0], full_bbox[1]
         
-        # We don't need to create a new landmark object - we'll handle the transformation in the visualization
-        
         # Process landmarks
         landmarks = results.pose_landmarks.landmark
         
         # Process landmarks to get orientation and position
-        return self._process_landmarks(landmarks, crop_w, crop_h, results.pose_landmarks, (x_offset, y_offset))
+        return self._process_landmarks(landmarks, crop_w, crop_h, results.pose_landmarks, (x_offset, y_offset), person_img)
     
     def _process_landmarks(self, landmarks, width: int, height: int, 
-                           original_landmarks, offset: Tuple[int, int] = (0, 0)) -> Dict[str, Any]:
+                           original_landmarks, offset: Tuple[int, int] = (0, 0),
+                           current_image: Optional[np.ndarray] = None) -> Dict[str, Any]:
         """
-        Process pose landmarks to extract orientation and position.
+        Process pose landmarks to extract orientation and position using 3D coordinates.
         
         Args:
             landmarks: MediaPipe pose landmarks
@@ -317,27 +353,17 @@ class PersonOrientationDetector:
             height: Image height
             original_landmarks: Original landmark object for visualization
             offset: Offset (x, y) if landmarks are from a cropped image
+            current_image: The current image being processed (for depth estimation)
             
         Returns:
             Dictionary with person data
         """
         # ===== TUNABLE PARAMETERS =====
-        # Main visibility thresholds
-        VISIBILITY_THRESHOLD = 0.5      # Base threshold for landmark visibility
-        NOSE_VISIBILITY_THRESHOLD = 0.8 # Higher threshold for nose landmark
-        FOOT_VISIBILITY_THRESHOLD = 0.4 # Lower threshold for foot landmarks (often less visible)
-        
-        # Orientation detection weights
-        DIRECTION_WEIGHT_NOSE = 0.05    # Weight given to nose direction (0-1)
-        DIRECTION_WEIGHT_SHOULDERS = 0.2 # Weight given to shoulder perpendicular (0-1)
-        DIRECTION_WEIGHT_FEET = 0.7     # Weight given to feet direction (0-1)
-        
-        # Body proportions for estimation
-        SHOULDER_HIP_RATIO = 1.0        # Ratio of shoulder-hip to hip-foot distance
-        BODY_WIDTH_FACTOR = 0.5         # Factor to estimate body width from height
+        VISIBILITY_THRESHOLD = 0.5
+        NOSE_VISIBILITY_THRESHOLD = 0.8
+        FOOT_VISIBILITY_THRESHOLD = 0.4
         
         # ===== LANDMARK INDICES =====
-        # Key body landmarks in MediaPipe
         NOSE = 0
         LEFT_SHOULDER = 11
         RIGHT_SHOULDER = 12
@@ -345,17 +371,24 @@ class PersonOrientationDetector:
         RIGHT_HIP = 24
         LEFT_ANKLE = 27
         RIGHT_ANKLE = 28
-        LEFT_FOOT_INDEX = 31  # Foot tip landmarks
+        LEFT_FOOT_INDEX = 31
         RIGHT_FOOT_INDEX = 32
-        LEFT_HEEL = 29        # Heel landmarks
+        LEFT_HEEL = 29
         RIGHT_HEEL = 30
         
-        # ===== COORDINATE INITIALIZATION =====
         x_offset, y_offset = offset
         
         # ===== EXTRACT VISIBLE LANDMARKS =====
-        visible_landmarks = []
         key_points = {}
+        key_points_3d = {}
+        
+        # Get depth map only if using depth-based orientation
+        depth_map = None
+        if self.use_depth_orientation:
+            if current_image is not None:
+                depth_map = self.depth_estimator.predict(current_image)
+            else:
+                depth_map = self.depth_estimator.predict(self.current_frame)
         
         for i, landmark in enumerate(landmarks):
             if landmark.visibility > VISIBILITY_THRESHOLD:
@@ -364,172 +397,256 @@ class PersonOrientationDetector:
                     landmark.x * width + x_offset,
                     landmark.y * height + y_offset
                 ]
-                visible_landmarks.append(point)
-                key_points[i] = np.array(point)
-            # Use lower threshold for foot landmarks
-            elif i in [LEFT_FOOT_INDEX, RIGHT_FOOT_INDEX, LEFT_HEEL, RIGHT_HEEL] and landmark.visibility > FOOT_VISIBILITY_THRESHOLD:
-                point = [
-                    landmark.x * width + x_offset,
-                    landmark.y * height + y_offset
-                ]
                 key_points[i] = np.array(point)
         
-        landmarks_array = np.array(visible_landmarks) if visible_landmarks else None
-        
-        # ===== POSITION CALCULATION =====
-        # Initialize position values
-        shoulder_midpoint = None
-        hip_midpoint = None
-        foot_position = None
-        
-        # Calculate midpoints when landmarks are available
-        if LEFT_SHOULDER in key_points and RIGHT_SHOULDER in key_points:
-            shoulder_midpoint = (key_points[LEFT_SHOULDER] + key_points[RIGHT_SHOULDER]) / 2
-            
-        if LEFT_HIP in key_points and RIGHT_HIP in key_points:
-            hip_midpoint = (key_points[LEFT_HIP] + key_points[RIGHT_HIP]) / 2
-        
-        # Calculate foot position with priority on foot tips
-        if LEFT_FOOT_INDEX in key_points and RIGHT_FOOT_INDEX in key_points:
-            # Method 1: Use foot tips for most accurate position
-            foot_position = (key_points[LEFT_FOOT_INDEX] + key_points[RIGHT_FOOT_INDEX]) / 2
-        elif LEFT_HEEL in key_points and RIGHT_HEEL in key_points:
-            # Method 2: Use heels if tips aren't visible
-            foot_position = (key_points[LEFT_HEEL] + key_points[RIGHT_HEEL]) / 2
-        elif LEFT_ANKLE in key_points and RIGHT_ANKLE in key_points:
-            # Method 3: Use ankle midpoint
-            foot_position = (key_points[LEFT_ANKLE] + key_points[RIGHT_ANKLE]) / 2
-        elif hip_midpoint is not None and shoulder_midpoint is not None:
-            # Method 4: Estimate from body proportions
-            body_height = np.linalg.norm(shoulder_midpoint - hip_midpoint)
-            foot_position = np.array([
-                hip_midpoint[0], 
-                hip_midpoint[1] + body_height * SHOULDER_HIP_RATIO
-            ])
-        elif landmarks_array is not None and len(landmarks_array) > 0:
-            # Method 5: Use lowest visible point
-            lowest_y_idx = np.argmax(landmarks_array[:, 1])
-            foot_position = landmarks_array[lowest_y_idx]
-        else:
-            # Method 6: Last resort fallback
-            foot_position = np.array([width / 2 + x_offset, height + y_offset])
+                # Get depth value only if using depth-based orientation
+                if self.use_depth_orientation and depth_map is not None:
+                    try:
+                        depth = depth_map[int(point[1]), int(point[0])]
+                        # Create 3D point (x, y, z) where z is depth
+                        point_3d = np.array([point[0], point[1], depth])
+                        key_points_3d[i] = point_3d
+                    except IndexError:
+                        # Handle out of bounds access
+                        continue
         
         # ===== ORIENTATION CALCULATION =====
         # Default orientation (facing down)
-        orientation = np.pi/2
-        direction_vectors = []
-        direction_weights = []
+        orientation = None
         
-        # Vector 1: Shoulder line perpendicular (strongest indicator for side view)
-        if LEFT_SHOULDER in key_points and RIGHT_SHOULDER in key_points:
-            shoulder_vector = key_points[RIGHT_SHOULDER] - key_points[LEFT_SHOULDER]
-            # Get perpendicular to shoulder line (90° rotation)
-            perp_vector = np.array([-shoulder_vector[1], shoulder_vector[0]])
-            
-            # Normalize the vector
-            norm = np.linalg.norm(perp_vector)
-            if norm > 0:
-                perp_vector = perp_vector / norm
+        # Constants for direction weights
+        DIRECTION_WEIGHT_NOSE = 0.05    # Weight given to nose direction (0-1)
+        DIRECTION_WEIGHT_SHOULDERS = 0.2 # Weight given to shoulder perpendicular (0-1)
+        DIRECTION_WEIGHT_FEET = 0.7     # Weight given to feet direction (0-1)
+        
+        if self.use_depth_orientation:
+            # Try to calculate orientation using shoulder-hip plane with 3D points
+            if (LEFT_SHOULDER in key_points_3d and RIGHT_SHOULDER in key_points_3d and 
+                LEFT_HIP in key_points_3d and RIGHT_HIP in key_points_3d):
+
+                # Get 3D points
+                sl = key_points_3d[LEFT_SHOULDER]
+                sr = key_points_3d[RIGHT_SHOULDER]
+                hl = key_points_3d[LEFT_HIP]
+                hr = key_points_3d[RIGHT_HIP]
                 
-                # Determine if perpendicular should point forward or backward
-                if hip_midpoint is not None:
-                    body_direction = hip_midpoint - shoulder_midpoint
-                    # Flip direction if needed based on body orientation
-                    if body_direction[1] > 0 and np.dot(perp_vector, [body_direction[0], 0]) > 0:
-                        perp_vector = -perp_vector
-                        
-                direction_vectors.append(perp_vector)
-                direction_weights.append(DIRECTION_WEIGHT_SHOULDERS)
-        
-        # Vector 2: Nose direction (strongest indicator for front/back view)
-        if NOSE in key_points and shoulder_midpoint is not None and landmarks[NOSE].visibility > NOSE_VISIBILITY_THRESHOLD:
-            nose_vector = key_points[NOSE] - shoulder_midpoint
-            # Project to horizontal plane
-            nose_vector = np.array([nose_vector[0], 0])
-            
-            # Normalize the vector
-            norm = np.linalg.norm(nose_vector)
-            if norm > 0:
-                nose_vector = nose_vector / norm
-                direction_vectors.append(nose_vector)
-                direction_weights.append(DIRECTION_WEIGHT_NOSE)
-        
-        # Vector 3: Feet orientation (useful for determining walking direction)
-        feet_vector = None
-        
-        # Try different combinations of foot landmarks for orientation
-        left_foot_vector = None
-        right_foot_vector = None
-        
-        # Get left foot direction (heel to tip)
-        if LEFT_FOOT_INDEX in key_points and LEFT_HEEL in key_points:
-            left_foot_vector = key_points[LEFT_FOOT_INDEX] - key_points[LEFT_HEEL]
-            # Normalize
-            norm = np.linalg.norm(left_foot_vector)
-            if norm > 0:
-                left_foot_vector = left_foot_vector / norm
-        
-        # Get right foot direction (heel to tip)
-        if RIGHT_FOOT_INDEX in key_points and RIGHT_HEEL in key_points:
-            right_foot_vector = key_points[RIGHT_FOOT_INDEX] - key_points[RIGHT_HEEL]
-            # Normalize
-            norm = np.linalg.norm(right_foot_vector)
-            if norm > 0:
-                right_foot_vector = right_foot_vector / norm
-        
-        # Find the best combination based on available data
-        if left_foot_vector is not None and right_foot_vector is not None:
-            # Average the two foot vectors for most accurate direction
-            feet_vector = (left_foot_vector + right_foot_vector) / 2
-            # Normalize the average
-            norm = np.linalg.norm(feet_vector)
-            if norm > 0:
-                feet_vector = feet_vector / norm
-      
-        
-        if feet_vector is not None:
-            # Emphasize horizontal component more than vertical
-            feet_vector = np.array([feet_vector[0], feet_vector[1]])
-            
-            # Normalize the vector
-            norm = np.linalg.norm(feet_vector)
-            if norm > 0:
-                feet_vector = feet_vector / norm
-                direction_vectors.append(feet_vector)
-                direction_weights.append(DIRECTION_WEIGHT_FEET)
-        
-        # Blend available direction vectors using weights
-        if direction_vectors:
-            # Normalize weights
-            total_weight = sum(direction_weights)
-            if total_weight > 0:
-                norm_weights = [w / total_weight for w in direction_weights]
+                # Y axis: from left shoulder to right shoulder
+                y_axis = sl - sr
+                y_axis /= np.linalg.norm(y_axis)
                 
-                # Calculate weighted average direction
-                front_direction = np.zeros(2)
-                for vector, weight in zip(direction_vectors, norm_weights):
-                    front_direction += vector * weight
+                # Plane vectors
+                v1 = sr - sl
+                v2 = hl - sl
                 
-                # Normalize final direction
-                norm = np.linalg.norm(front_direction)
+                # X axis: Body front (perpendicular to plane)
+                x_axis = np.cross(v2, y_axis)
+                x_axis /= np.linalg.norm(x_axis)
+                
+                # Z axis: Perpendicular to body plane (outward direction)
+                z_axis = np.cross(x_axis, y_axis)
+                z_axis /= np.linalg.norm(z_axis)
+
+                # Calculate 3D points for origin and direction
+                origin = (sl + sr) / 2  # Shoulder center
+                scale = 0.2
+                z_end = origin + scale * z_axis
+
+                # Camera intrinsics (these should be calibrated for your camera)
+                fx = 1000  # focal length x
+                fy = 1000  # focal length y
+                cx = width / 2  # principal point x
+                cy = height / 2  # principal point y
+
+                # Convert 3D points to 2D using perspective projection
+                def project_3d_to_2d(point_3d, depth):
+                    # Perspective projection
+                    x = (point_3d[0] * fx / depth) + cx
+                    y = (point_3d[1] * fy / depth) + cy
+                    return np.array([x, y])
+
+                # Get depth values for origin and z_end points
+                origin_depth = depth_map[int(origin[1]), int(origin[0])]
+                z_end_depth = depth_map[int(z_end[1]), int(z_end[0])]
+
+                # Project points to 2D
+                origin_2d = project_3d_to_2d(origin, origin_depth)
+                z_end_2d = project_3d_to_2d(z_end, z_end_depth)
+
+                # Calculate direction vector in 2D
+                direction_2d = origin_2d - z_end_2d
+                direction_2d = direction_2d / np.linalg.norm(direction_2d)
+
+                # Calculate orientation angle from 2D direction
+                orientation = np.arctan2(direction_2d[1], direction_2d[0])
+
+                # Debug visualization
+                if current_image is not None:
+                    # Draw points and direction
+                    cv2.circle(current_image, (int(origin_2d[0]), int(origin_2d[1])), 5, (0, 255, 0), -1)
+                    cv2.circle(current_image, (int(z_end_2d[0]), int(z_end_2d[1])), 5, (0, 0, 255), -1)
+                    cv2.arrowedLine(current_image, 
+                                  (int(origin_2d[0]), int(origin_2d[1])),
+                                  (int(z_end_2d[0]), int(z_end_2d[1])),
+                                  (255, 0, 0), 2)
+
+        else:
+            # Use 2D landmarks for weighted orientation estimation
+            direction_vectors = []
+            direction_weights = []
+            
+            # Calculate midpoints for reference
+            shoulder_midpoint = None
+            hip_midpoint = None
+            
+            if LEFT_SHOULDER in key_points and RIGHT_SHOULDER in key_points:
+                shoulder_midpoint = (key_points[LEFT_SHOULDER] + key_points[RIGHT_SHOULDER]) / 2
+            
+            if LEFT_HIP in key_points and RIGHT_HIP in key_points:
+                hip_midpoint = (key_points[LEFT_HIP] + key_points[RIGHT_HIP]) / 2
+            
+            # Vector 1: Shoulder line perpendicular (strongest indicator for side view)
+            if LEFT_SHOULDER in key_points and RIGHT_SHOULDER in key_points:
+                shoulder_vector = key_points[RIGHT_SHOULDER] - key_points[LEFT_SHOULDER]
+                # Get perpendicular to shoulder line (90° rotation)
+                perp_vector = np.array([-shoulder_vector[1], shoulder_vector[0]])
+                
+                # Normalize the vector
+                norm = np.linalg.norm(perp_vector)
                 if norm > 0:
-                    front_direction = front_direction / norm
-                    orientation = np.arctan2(front_direction[1], front_direction[0])
+                    perp_vector = perp_vector / norm
+                    
+                    # Determine if perpendicular should point forward or backward
+                    if hip_midpoint is not None and shoulder_midpoint is not None:
+                        body_direction = hip_midpoint - shoulder_midpoint
+                        # Flip direction if needed based on body orientation
+                        if body_direction[1] > 0 and np.dot(perp_vector, [body_direction[0], 0]) > 0:
+                            perp_vector = -perp_vector
+                            
+                    direction_vectors.append(perp_vector)
+                    direction_weights.append(DIRECTION_WEIGHT_SHOULDERS)
+            
+            # Vector 2: Nose direction (strongest indicator for front/back view)
+            if NOSE in key_points and shoulder_midpoint is not None and landmarks[NOSE].visibility > NOSE_VISIBILITY_THRESHOLD:
+                nose_vector = key_points[NOSE] - shoulder_midpoint
+                # Project to horizontal plane
+                nose_vector = np.array([nose_vector[0], 0])
+                
+                # Normalize the vector
+                norm = np.linalg.norm(nose_vector)
+                if norm > 0:
+                    nose_vector = nose_vector / norm
+                    direction_vectors.append(nose_vector)
+                    direction_weights.append(DIRECTION_WEIGHT_NOSE)
+            
+            # Vector 3: Feet orientation (useful for determining walking direction)
+            feet_vector = None
+            
+            # Try different combinations of foot landmarks for orientation
+            left_foot_vector = None
+            right_foot_vector = None
+            
+            # Get left foot direction (heel to tip)
+            if LEFT_FOOT_INDEX in key_points and LEFT_HEEL in key_points:
+                left_foot_vector = key_points[LEFT_FOOT_INDEX] - key_points[LEFT_HEEL]
+                # Normalize
+                norm = np.linalg.norm(left_foot_vector)
+                if norm > 0:
+                    left_foot_vector = left_foot_vector / norm
+            
+            # Get right foot direction (heel to tip)
+            if RIGHT_FOOT_INDEX in key_points and RIGHT_HEEL in key_points:
+                right_foot_vector = key_points[RIGHT_FOOT_INDEX] - key_points[RIGHT_HEEL]
+                # Normalize
+                norm = np.linalg.norm(right_foot_vector)
+                if norm > 0:
+                    right_foot_vector = right_foot_vector / norm
+            
+            # Find the best combination based on available data
+            if left_foot_vector is not None and right_foot_vector is not None:
+                # Average the two foot vectors for most accurate direction
+                feet_vector = (left_foot_vector + right_foot_vector) / 2
+                # Normalize the average
+                norm = np.linalg.norm(feet_vector)
+                if norm > 0:
+                    feet_vector = feet_vector / norm
+            
+            if feet_vector is not None:
+                # Emphasize horizontal component more than vertical
+                feet_vector = np.array([feet_vector[0], feet_vector[1]])
+                
+                # Normalize the vector
+                norm = np.linalg.norm(feet_vector)
+                if norm > 0:
+                    feet_vector = feet_vector / norm
+                    direction_vectors.append(feet_vector)
+                    direction_weights.append(DIRECTION_WEIGHT_FEET)
+            
+            # Blend available direction vectors using weights
+            if direction_vectors:
+                # Normalize weights
+                total_weight = sum(direction_weights)
+                if total_weight > 0:
+                    norm_weights = [w / total_weight for w in direction_weights]
+                    
+                    # Calculate weighted average direction
+                    front_direction = np.zeros(2)
+                    for vector, weight in zip(direction_vectors, norm_weights):
+                        front_direction += vector * weight
+                    
+                    # Normalize final direction
+                    norm = np.linalg.norm(front_direction)
+                    if norm > 0:
+                        front_direction = front_direction / norm
+                        orientation = np.arctan2(front_direction[1], front_direction[0])
+        
+        # ===== POSITION CALCULATION =====
+        foot_position = None
+        
+        # Try to get foot position from foot landmarks
+        if LEFT_FOOT_INDEX in key_points and RIGHT_FOOT_INDEX in key_points:
+            foot_position = (key_points[LEFT_FOOT_INDEX] + key_points[RIGHT_FOOT_INDEX]) / 2
+        elif LEFT_HEEL in key_points and RIGHT_HEEL in key_points:
+            foot_position = (key_points[LEFT_HEEL] + key_points[RIGHT_HEEL]) / 2
+        elif LEFT_ANKLE in key_points and RIGHT_ANKLE in key_points:
+            foot_position = (key_points[LEFT_ANKLE] + key_points[RIGHT_ANKLE]) / 2
+        
+        if foot_position is None:
+            # Try to use hip position as fallback
+            if LEFT_HIP in key_points and RIGHT_HIP in key_points:
+                hip_position = (key_points[LEFT_HIP] + key_points[RIGHT_HIP]) / 2
+                # Estimate foot position below hip
+                foot_position = np.array([
+                    hip_position[0],
+                    hip_position[1] + 100,  # Add some distance below hip
+                    0  # No depth information when not using depth
+                ])
+            else:
+                # Last resort: use the lowest visible point
+                lowest_y = -1
+                for point in key_points.values():
+                    if point[1] > lowest_y:
+                        lowest_y = point[1]
+                        foot_position = np.array([point[0], point[1], 0])
+        
+        # If still no foot position, use center bottom of image
+        if foot_position is None:
+            foot_position = np.array([
+                width / 2 + x_offset,
+                height + y_offset,
+                0  # No depth information when not using depth
+            ])
         
         # ===== BOUNDING BOX CALCULATION =====
-        if landmarks_array is not None and len(landmarks_array) > 0:
-            min_x, min_y = np.min(landmarks_array, axis=0)
-            max_x, max_y = np.max(landmarks_array, axis=0)
+        if key_points:
+            points_array = np.array(list(key_points.values()))
+            min_x, min_y = np.min(points_array, axis=0)
+            max_x, max_y = np.max(points_array, axis=0)
             bbox = (int(min_x), int(min_y), int(max_x - min_x), int(max_y - min_y))
         else:
             # Estimate bbox from foot position
-            foot_x, foot_y = foot_position
-            estimated_height = 160  # Default height in pixels
-            if shoulder_midpoint is not None and hip_midpoint is not None:
-                body_height = np.linalg.norm(shoulder_midpoint - hip_midpoint)
-                estimated_height = body_height * (1 + SHOULDER_HIP_RATIO)
-                
-            estimated_width = estimated_height * BODY_WIDTH_FACTOR
+            foot_x, foot_y = foot_position[:2]
+            estimated_height = 160
+            estimated_width = estimated_height * 0.5
             bbox = (
                 int(foot_x - estimated_width/2), 
                 int(foot_y - estimated_height),
@@ -538,18 +655,12 @@ class PersonOrientationDetector:
             )
         
         # ===== CONFIDENCE CALCULATION =====
-        # Default confidence
         confidence = 0.5
         
-        # Refine confidence based on available landmarks
-        if NOSE in key_points:
-            confidence = landmarks[NOSE].visibility
-        
         # Boost confidence if we have key points
-        num_key_points = len([p for p in [LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP] if p in key_points])
-        # Add extra confidence if foot landmarks are detected
-        num_foot_points = len([p for p in [LEFT_FOOT_INDEX, RIGHT_FOOT_INDEX, LEFT_HEEL, RIGHT_HEEL] if p in key_points])
-        confidence = max(confidence, 0.3 + 0.1 * num_key_points + 0.05 * num_foot_points)
+        num_key_points = len([p for p in [LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP] 
+                            if p in key_points])
+        confidence = max(confidence, 0.3 + 0.1 * num_key_points)
         
         # ===== RETURN RESULT =====
         return {
@@ -558,9 +669,10 @@ class PersonOrientationDetector:
             "confidence": confidence,
             "bbox": bbox,
             "landmarks": landmarks,
-            "original_landmarks": original_landmarks,  # For visualization
-            "offset": offset,  # For drawing
-            "dimensions": (width, height)  # For drawing
+            "original_landmarks": original_landmarks,
+            "offset": offset,
+            "dimensions": (width, height),
+            "key_points_3d": key_points_3d if self.use_depth_orientation else None
         }
     
     def map_to_2d(self, people: List[Dict[str, Any]], room_index: int, cam_index: int) -> List[Dict[str, Any]]:
@@ -624,19 +736,23 @@ class PersonOrientationDetector:
         
         return mapped_people
     
-    def visualize_detection(self, image: np.ndarray, people: List[Dict[str, Any]]) -> np.ndarray:
+    def visualize_detection(self, image: np.ndarray, people: List[Dict[str, Any]], fps: float = 0.0) -> np.ndarray:
         """
         Visualize detected people and their orientations on the input image.
         
         Args:
             image: Input image
             people: List of detected people
+            fps: Current FPS value
             
         Returns:
             Image with visualizations
         """
         # Create a copy of the image
         vis_image = image.copy()
+        
+        # Draw FPS
+        cv2.putText(vis_image, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         
         # First draw bounding boxes and labels
         for i, person in enumerate(people):
@@ -653,7 +769,6 @@ class PersonOrientationDetector:
             center_x, center_y = person["position"]
             orientation = person["orientation"]
             confidence = person.get("confidence", 0.5)
-            yolo_confidence = person.get("yolo_confidence", 0.0)
             
             # Draw bounding box
             cv2.rectangle(vis_image, (x, y), (x + w, y + h), person_color, 2)
@@ -662,23 +777,8 @@ class PersonOrientationDetector:
             cv2.putText(vis_image, f"Person {i+1}", (x, y - 10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, person_color, 2)
             
-            # Draw confidence scores
-            if yolo_confidence > 0:
-                cv2.putText(vis_image, f"YOLO: {yolo_confidence:.2f}", (x, y + h + 15), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, person_color, 2)
-                cv2.putText(vis_image, f"Pose: {confidence:.2f}", (x, y + h + 35), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, person_color, 2)
-            else:
-                cv2.putText(vis_image, f"Conf: {confidence:.2f}", (x, y + h + 15), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, person_color, 2)
-            
-            # Draw orientation vector
-            length = 30
-            dx = int(length * np.cos(orientation))
-            dy = int(length * np.sin(orientation))
-            cv2.arrowedLine(vis_image, (center_x, center_y), 
-                           (center_x + dx, center_y + dy), 
-                           (0, 0, 255), 2)
+            # Draw confidence score
+            cv2.putText(vis_image, f"Conf: {confidence:.2f}", (x, y + h + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, person_color, 2)
             
             # Draw foot position
             cv2.circle(vis_image, (center_x, center_y), 5, (0, 255, 255), -1)
@@ -724,32 +824,22 @@ class PersonOrientationDetector:
                     if (start_idx < len(landmarks) and end_idx < len(landmarks) and
                         landmarks[start_idx].visibility > 0.5 and landmarks[end_idx].visibility > 0.5):
                         
-                        # Calculate actual coordinates in the image
-                        # Use the original crop dimensions, not the bounding box dimensions
                         start_x = int(landmarks[start_idx].x * orig_width + x_offset)
                         start_y = int(landmarks[start_idx].y * orig_height + y_offset)
                         end_x = int(landmarks[end_idx].x * orig_width + x_offset)
                         end_y = int(landmarks[end_idx].y * orig_height + y_offset)
                         
-                        # Draw the line
                         cv2.line(vis_image, (start_x, start_y), (end_x, end_y), pose_color, 2)
                 
                 # Draw key points
                 for idx, landmark in enumerate(landmarks):
                     if landmark.visibility > 0.5:
-                        # Calculate actual coordinates in the image
-                        # Use the original dimensions for proper scaling
                         point_x = int(landmark.x * orig_width + x_offset)
                         point_y = int(landmark.y * orig_height + y_offset)
                         cv2.circle(vis_image, (point_x, point_y), 4, pose_color, -1)
                         
             except Exception as e:
                 print(f"Error drawing pose for person {i+1}: {str(e)}")
-        
-        # Add a note about YOLOv8 detection
-        cv2.putText(vis_image, "YOLOv8 + MediaPipe Detection", 
-                  (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                  0.7, (0, 0, 255), 2)
         
         return vis_image
     
@@ -825,7 +915,7 @@ class PersonOrientationDetector:
             
             # Draw person ID
             plt.text(map_x - 5, map_y - 20, f"Person {i+1}", color=person_color, fontsize=10, 
-                    fontweight='bold', bbox=dict(facecolor='white', alpha=0.7))
+                    fontweight='bold', bbox=dict(facecolor='white', alpha=1.0))
             
             # Draw orientation arrow
             arrow_length = 20
@@ -862,12 +952,21 @@ class PersonOrientationDetector:
             print(f"Checking if file exists: {os.path.exists(image_path)}")
             return
         
+        # Store current frame for depth estimation
+        self.current_frame = image
+        
         # Convert to RGB
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Start timing
+        start_time = time.time()
         
         # Detect people
         people = self.detect_people(image_rgb)
         print(f"Detected {len(people)} people in the image")
+        
+        # Calculate FPS
+        fps = 1.0 / (time.time() - start_time)
         
         if not people:
             print("No people detected")
@@ -881,7 +980,7 @@ class PersonOrientationDetector:
             return
         
         # Visualize detections on the input image
-        vis_image = self.visualize_detection(image_rgb, people)
+        vis_image = self.visualize_detection(image_rgb, people, fps)
         
         # Display the results
         plt.figure(figsize=(12, 6))

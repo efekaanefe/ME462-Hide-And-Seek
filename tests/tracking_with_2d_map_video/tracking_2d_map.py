@@ -4,27 +4,31 @@ import time
 
 from orientation_test_2D import PersonOrientationDetector
 from homography_modular import HomographyTool
-
 from tracker import PersonTracker
-
 from MQTTPublisher import MQTTPublisher
 
-def main():
+def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_index: int = 0, 
+                headless: bool = False, show_fps: bool = True, use_depth_orientation: bool = True):
+    """
+    Run the tracking system with specified parameters.
+    
+    Args:
+        video_path: Path to input video file
+        output_path: Path to save output video
+        room_index: Room index to use
+        cam_index: Camera index to use
+        headless: If True, run without displaying video window
+        show_fps: If True, display FPS on video
+    """
     # Initialize the tools
     homography_tool = HomographyTool()
-    orientation_detector = PersonOrientationDetector()
+    orientation_detector = PersonOrientationDetector(use_depth_orientation=use_depth_orientation)
     person_tracker = PersonTracker()
 
     # MQTT
     publisher = MQTTPublisher(broker_address="mqtt.eclipseprojects.io")
     publisher.connect()
     
-    # Configuration
-    room_index = 0  # Room index to use
-    cam_index = 0   # Camera index to use
-    video_path = "test-home2.mp4"  # Path to your video file
-    output_path = "output_tracking.mp4"  # Path to save the output video
-
     # Load 2D map
     map_path = f"rooms_database/room{room_index}/2Dmap.png"
     map_img = cv2.imread(map_path)
@@ -50,20 +54,24 @@ def main():
 
     # Create video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    #out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
     out = cv2.VideoWriter(output_path, fourcc, fps, (1600, 1200))
 
-    # Initialize visualization window
-    cv2.namedWindow("Tracking", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Tracking", 1280, 720)
+    # Initialize visualization window if not headless
+    if not headless:
+        cv2.namedWindow("Tracking", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Tracking", 1280, 720)
 
-    frame_count = 0
-    start_time = time.time()
+    # Initialize FPS calculation variables
+    fps = 0
+    fps_list = []  # Store last 30 FPS values for smoothing
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+
+        # Start timing for FPS calculation
+        frame_start_time = time.time()
 
         # Rotate frame 90 degrees counterclockwise
         frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
@@ -89,6 +97,31 @@ def main():
         # Update tracker
         current_time = time.time()
         tracks = person_tracker.update(frame, detections, current_time)
+
+        # Calculate FPS
+        frame_time = time.time() - frame_start_time
+        current_fps = 1.0 / frame_time if frame_time > 0 else 0
+        
+        # Update FPS list for smoothing
+        fps_list.append(current_fps)
+        if len(fps_list) > 30:  # Keep last 30 frames
+            fps_list.pop(0)
+        fps = sum(fps_list) / len(fps_list)  # Calculate average FPS
+
+        # Draw FPS on frame if enabled
+        if show_fps:
+            # Get frame dimensions
+            height, width = frame.shape[:2]
+            # Calculate text size to position it properly
+            text = f"FPS: {fps:.1f}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 1
+            thickness = 2
+            (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
+            # Position text in top right corner with padding
+            x = width - text_width - 20  # 20 pixels padding from right edge
+            y = text_height + 20  # 20 pixels padding from top
+            cv2.putText(frame, text, (x, y), font, font_scale, (0, 255, 0), thickness)
 
         # Map tracked people to 2D coordinates
         mapped_people = []
@@ -117,23 +150,7 @@ def main():
                     # Get orientation if available
                     orientation = None
                     
-                    # Calculate movement-based orientation from tracking history
-                    movement_orientation = None
-                    if 'history' in track_data and len(track_data['history']) >= 2:
-                        # Get last two positions from history
-                        prev_pos = track_data['history'][-2]
-                        curr_pos = track_data['history'][-1]
-                        
-                        # Calculate movement vector
-                        dx = curr_pos[0] - prev_pos[0]
-                        dy = curr_pos[1] - prev_pos[1]
-                        
-                        # Only use movement if it's significant enough
-                        movement_magnitude = np.sqrt(dx*dx + dy*dy)
-                        if movement_magnitude > 1:  # Minimum movement threshold
-                            movement_orientation = np.arctan2(dy, dx)
-
-                    # Combine MediaPipe orientation with movement-based orientation
+                    # Use only MediaPipe orientation
                     if matching_person and "orientation" in matching_person:
                         # Transform MediaPipe orientation to map coordinates
                         dx, dy = np.cos(matching_person["orientation"]), np.sin(matching_person["orientation"])
@@ -147,27 +164,7 @@ def main():
                         
                         # Calculate orientation in map coordinates
                         map_dx, map_dy = map_dir_point[0] - mapped_point[0], map_dir_point[1] - mapped_point[1]
-                        mediapipe_orientation = np.arctan2(map_dy, map_dx)
-
-                        # Combine orientations if both are available
-                        if movement_orientation is not None:
-                            # Weight the orientations (adjust weights as needed)
-                            mediapipe_weight = 0.0
-                            movement_weight = 1.0
-                            
-                            # Calculate weighted average of orientations
-                            # Use complex numbers for proper angle averaging
-                            mediapipe_complex = np.exp(1j * mediapipe_orientation)
-                            movement_complex = np.exp(1j * movement_orientation)
-                            
-                            combined_complex = (mediapipe_weight * mediapipe_complex + 
-                                              movement_weight * movement_complex)
-                            orientation = np.angle(combined_complex)
-                        else:
-                            orientation = mediapipe_orientation
-                    elif movement_orientation is not None:
-                        # Use movement-based orientation if MediaPipe orientation is not available
-                        orientation = movement_orientation
+                        orientation = np.arctan2(map_dy, map_dx)
 
                     mapped_people.append({
                         "track_id": track_id,
@@ -175,63 +172,43 @@ def main():
                         "position": (mapped_point[0], mapped_point[1]),
                         "bbox": bbox,
                         "orientation": orientation,
-                        "mediapipe_orientation": matching_person["orientation"] if matching_person and "orientation" in matching_person else None,
-                        "movement_orientation": movement_orientation
                     })
                 except Exception as e:
                     print(f"Error mapping point: {e}")
 
-        # Draw tracking results on frame
+        # Draw tracking results on frame if not headless
         for person in mapped_people:
             track_id = person["track_id"]
             name = person["name"]
             bbox = person["bbox"]
             map_pos = person["position"]
             orientation = person.get("orientation")
-            mediapipe_orientation = person.get("mediapipe_orientation")
-            movement_orientation = person.get("movement_orientation")
 
             # Draw bounding box
             cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), 
-                         (int(bbox[2]), int(bbox[3])), (0, 255, 0), 2)
+                            (int(bbox[2]), int(bbox[3])), (0, 255, 0), 2)
 
             # Draw label
             label = f"{name} (ID: {track_id})"
             cv2.putText(frame, label, (int(bbox[0]), int(bbox[1] - 10)),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
             # Draw map coordinates
             coord_text = f"Map: ({int(map_pos[0])}, {int(map_pos[1])})"
             cv2.putText(frame, coord_text, (int(bbox[0]), int(bbox[3] + 20)),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
             # Draw orientation if available
             if orientation is not None:
-                # Draw combined orientation arrow on frame (red)
+                # Draw orientation arrow on frame (red)
                 center_x = (bbox[0] + bbox[2]) / 2
                 center_y = bbox[3]
                 arrow_length = 30
                 dx = int(arrow_length * np.cos(orientation))
                 dy = int(arrow_length * np.sin(orientation))
                 cv2.arrowedLine(frame, (int(center_x), int(center_y)),
-                              (int(center_x + dx), int(center_y + dy)),
-                              (0, 0, 255), 2)
-
-                # Draw MediaPipe orientation if available (blue)
-                if mediapipe_orientation is not None:
-                    dx = int(arrow_length * np.cos(mediapipe_orientation))
-                    dy = int(arrow_length * np.sin(mediapipe_orientation))
-                    cv2.arrowedLine(frame, (int(center_x), int(center_y)),
-                                  (int(center_x + dx), int(center_y + dy)),
-                                  (255, 0, 0), 1)
-
-                # Draw movement orientation if available (green)
-                if movement_orientation is not None:
-                    dx = int(arrow_length * np.cos(movement_orientation))
-                    dy = int(arrow_length * np.sin(movement_orientation))
-                    cv2.arrowedLine(frame, (int(center_x), int(center_y)),
-                                  (int(center_x + dx), int(center_y + dy)),
-                                  (0, 255, 0), 1)
+                                (int(center_x + dx), int(center_y + dy)),
+                                (0, 0, 255), 2)
 
             # Draw position and orientation on map
             map_copy = map_img.copy()
@@ -242,7 +219,7 @@ def main():
             # Draw person circle
             cv2.circle(map_copy, (map_x, map_y), 5, (0, 0, 255), -1)
             cv2.putText(map_copy, f"ID: {track_id}", (map_x + 5, map_y - 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
             # Draw orientation arrow on map if available
             if orientation is not None:
@@ -250,52 +227,58 @@ def main():
                 dx = int(arrow_length * np.cos(orientation))
                 dy = int(arrow_length * np.sin(orientation))
                 cv2.arrowedLine(map_copy, (map_x, map_y),
-                              (map_x + dx, map_y + dy),
-                              (0, 255, 0), 2)
+                                (map_x + dx, map_y + dy),
+                                (0, 255, 0), 2)
 
-            # Publish coordinates and orientation to MQTT
+            # Overlay map on frame
+            map_overlay = np.zeros_like(frame)
+            map_overlay[10:10+map_img.shape[0], 10:10+map_img.shape[1]] = map_copy
+            frame = cv2.addWeighted(frame, 1, map_overlay, 1, 0)
+
+        # Publish coordinates and orientation to MQTT
+        for person in mapped_people:
             position_data = {
-                "track_id": track_id,
-                "name": name,
-                "x": float(map_pos[0]),
-                "y": float(map_pos[1]),
-                "orientation": float(orientation) if orientation is not None else None,
+                "track_id": person["track_id"],
+                "name": person["name"],
+                "x": float(person["position"][0]),
+                "y": float(person["position"][1]),
+                "orientation": float(person["orientation"]) if person["orientation"] is not None else None,
                 "timestamp": current_time
             }
-            publisher.publish(f"game/player/position/{track_id}", str(position_data), qos=1)
-
-        # Overlay map on frame
-        map_overlay = np.zeros_like(frame)
-        map_overlay[10:10+map_img.shape[0], 10:10+map_img.shape[1]] = map_copy
-        frame = cv2.addWeighted(frame, 1, map_overlay, 0.7, 0)
+            publisher.publish(f"game/player/position/{person['track_id']}", str(position_data), qos=1)
 
         # Write frame to output video
         out.write(frame)
 
-        # Display frame
-        cv2.imshow("Tracking", frame)
-
-        # Print FPS every 30 frames
-        frame_count += 1
-        if frame_count % 30 == 0:
-            elapsed_time = time.time() - start_time
-            fps = frame_count / elapsed_time
-            print(f"FPS: {fps:.2f}")
-
-        # Break loop on 'q' key press
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # Display frame if not headless
+        if not headless:
+            cv2.imshow("Tracking", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
     # Cleanup
     cap.release()
     out.release()
-    cv2.destroyAllWindows()
+    if not headless:
+        cv2.destroyAllWindows()
 
     # Print tracking statistics
     time_data = person_tracker.get_time_data()
     print("\nTracking Statistics:")
     for data in time_data:
         print(data)
+
+def main():
+    # Example usage with direct function call
+    run_tracking(
+        video_path="test-home2.mp4",
+        output_path="output_tracking.mp4",
+        room_index=0,
+        cam_index=0,
+        headless=False,  # Set to True for headless mode
+        show_fps=True,   # Set to False to hide FPS
+        use_depth_orientation=True
+    )
 
 if __name__ == "__main__":
     main() 
