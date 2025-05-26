@@ -202,7 +202,7 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
             # Draw map coordinates
             coord_text = f"Map: ({int(map_pos[0])}, {int(map_pos[1])})"
             cv2.putText(frame, coord_text, (int(bbox[0]), int(bbox[3] + 20)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
 
             # Draw orientation if available
             if orientation is not None and "axis_info" in person:
@@ -225,9 +225,9 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
             map_y = int(map_pos[1] * map_img.shape[0] / 1000)
             
             # Draw person circle
-            cv2.circle(map_copy, (map_x, map_y), 5, (0, 0, 255), -1)
+            cv2.circle(map_copy, (map_x, map_y), 5, (0, 0, 0), -1)
             cv2.putText(map_copy, f"ID: {track_id}", (map_x + 5, map_y - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4)
             
             # Draw orientation arrow on map if available
             if orientation is not None:
@@ -236,12 +236,19 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
                 dy = int(arrow_length * np.sin(orientation))
                 cv2.arrowedLine(map_copy, (map_x, map_y),
                                 (map_x + dx, map_y + dy),
-                                (0, 255, 0), 2)
+                                (0, 0, 0), 4)
 
             # Overlay map on frame
             map_overlay = np.zeros_like(frame)
             map_overlay[10:10+map_img.shape[0], 10:10+map_img.shape[1]] = map_copy
             frame = cv2.addWeighted(frame, 1, map_overlay, 1, 0)
+
+            # Display orientation angle on frame if available
+            if orientation is not None:
+                orientation_deg = np.degrees(orientation)
+                orientation_text = f"Orientation: {orientation_deg:.1f}°"
+                cv2.putText(frame, orientation_text, (10, frame.shape[0] - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
 
         # Publish coordinates and orientation to MQTT
         for person in mapped_people:

@@ -42,6 +42,66 @@ class DepthEstimator:
         depth_map = prediction.cpu().numpy()
         return depth_map
 
+class KalmanFilter:
+    def __init__(self, process_variance=1e-4, measurement_variance=1e-2):
+        """
+        Initialize Kalman filter for orientation smoothing.
+        
+        Args:
+            process_variance: Variance of the process noise
+            measurement_variance: Variance of the measurement noise
+        """
+        # State transition matrix (1x1 for orientation)
+        self.A = np.array([[1.0]])
+        
+        # Measurement matrix (1x1 for orientation)
+        self.H = np.array([[1.0]])
+        
+        # Process noise covariance
+        self.Q = np.array([[process_variance]])
+        
+        # Measurement noise covariance
+        self.R = np.array([[measurement_variance]])
+        
+        # Initial state estimate
+        self.x = np.array([[0.0]])
+        
+        # Initial estimate covariance
+        self.P = np.array([[1.0]])
+        
+        # Store last valid orientation
+        self.last_valid_orientation = None
+        
+    def update(self, measurement):
+        """
+        Update the Kalman filter with a new measurement.
+        
+        Args:
+            measurement: New orientation measurement in radians
+            
+        Returns:
+            Smoothed orientation in radians
+        """
+        if measurement is None:
+            return self.last_valid_orientation
+            
+        # Convert measurement to numpy array
+        z = np.array([[measurement]])
+        
+        # Predict
+        x_pred = self.A @ self.x
+        P_pred = self.A @ self.P @ self.A.T + self.Q
+        
+        # Update
+        K = P_pred @ self.H.T @ np.linalg.inv(self.H @ P_pred @ self.H.T + self.R)
+        self.x = x_pred + K @ (z - self.H @ x_pred)
+        self.P = (np.eye(1) - K @ self.H) @ P_pred
+        
+        # Store last valid orientation
+        self.last_valid_orientation = self.x[0, 0]
+        
+        return self.last_valid_orientation
+
 class PersonOrientationDetector:
     def __init__(self, homography_file: str = "homography_matrices.json", use_depth_orientation: bool = True):
         """
@@ -60,6 +120,7 @@ class PersonOrientationDetector:
         self.use_depth_orientation = use_depth_orientation
         self.depth_estimator = DepthEstimator("MiDaS_small") if use_depth_orientation else None
         self.current_frame = None
+        self.orientation_filters = {}  # Dictionary to store Kalman filters for each person
         self.initialize_models()
         
     def initialize_models(self) -> None:
@@ -147,6 +208,12 @@ class PersonOrientationDetector:
             self.people_detector = cv2.HOGDescriptor()
             self.people_detector.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
     
+    def _get_or_create_filter(self, person_id):
+        """Get existing Kalman filter or create a new one for a person"""
+        if person_id not in self.orientation_filters:
+            self.orientation_filters[person_id] = KalmanFilter()
+        return self.orientation_filters[person_id]
+
     def detect_people(self, image: np.ndarray) -> List[Dict[str, Any]]:
         """
         Detect multiple people in the image and estimate their orientations.
@@ -188,7 +255,7 @@ class PersonOrientationDetector:
                 continue  # Skip empty crops
                 
             # Run MediaPipe pose detection on the cropped image
-            mp_person = self._process_person_with_mediapipe(person_img, (x1, y1, x2-x1, y2-y1))
+            mp_person = self._process_person_with_mediapipe(person_img, (x1, y1, x2-x1, y2-y1), person_id=i)
             
             if mp_person:
                 # Add YOLOv8 detection confidence
@@ -199,9 +266,13 @@ class PersonOrientationDetector:
                 foot_x = x + w // 2
                 foot_y = y + h  # Bottom of the bounding box
                 
+                # Get smoothed orientation from Kalman filter
+                kf = self._get_or_create_filter(i)
+                orientation = kf.update(np.pi)  # Default: facing down
+                
                 people.append({
                     "position": (foot_x, foot_y),
-                    "orientation": np.pi,  # Default: facing down
+                    "orientation": orientation,
                     "confidence": conf,  # Use YOLOv8 confidence
                     "yolo_confidence": conf,
                     "bbox": (x, y, w, h)
@@ -306,13 +377,14 @@ class PersonOrientationDetector:
         
         return people
     
-    def _process_person_with_mediapipe(self, person_img: np.ndarray, full_bbox: Tuple[int, int, int, int]) -> Optional[Dict[str, Any]]:
+    def _process_person_with_mediapipe(self, person_img: np.ndarray, full_bbox: Tuple[int, int, int, int], person_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """
         Process a cropped person image with MediaPipe.
         
         Args:
             person_img: Cropped image of the person
             full_bbox: Bounding box in the original image (x, y, w, h)
+            person_id: Optional ID for tracking the person across frames
             
         Returns:
             Dictionary with person data or None if detection fails
@@ -339,11 +411,14 @@ class PersonOrientationDetector:
         landmarks = results.pose_landmarks.landmark
         
         # Process landmarks to get orientation and position
-        return self._process_landmarks(landmarks, crop_w, crop_h, results.pose_landmarks, (x_offset, y_offset), person_img)
+        person_data = self._process_landmarks(landmarks, crop_w, crop_h, results.pose_landmarks, (x_offset, y_offset), person_img, person_id)
+        
+        return person_data
     
     def _process_landmarks(self, landmarks, width: int, height: int, 
                            original_landmarks, offset: Tuple[int, int] = (0, 0),
-                           current_image: Optional[np.ndarray] = None) -> Dict[str, Any]:
+                           current_image: Optional[np.ndarray] = None,
+                           person_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Process pose landmarks to extract orientation and position using 3D coordinates.
         
@@ -354,6 +429,7 @@ class PersonOrientationDetector:
             original_landmarks: Original landmark object for visualization
             offset: Offset (x, y) if landmarks are from a cropped image
             current_image: The current image being processed (for depth estimation)
+            person_id: Optional ID for tracking the person across frames
             
         Returns:
             Dictionary with person data
@@ -420,8 +496,8 @@ class PersonOrientationDetector:
         DIRECTION_WEIGHT_FEET = 0.7     # Weight given to feet direction (0-1)
 
         DIRECTION_WEIGHT_NOSE = 0.0   
-        DIRECTION_WEIGHT_SHOULDERS = -0.2 
-        DIRECTION_WEIGHT_FEET = 0.9
+        DIRECTION_WEIGHT_SHOULDERS = 0.2 
+        DIRECTION_WEIGHT_FEET = 0.8
 
         
         if self.use_depth_orientation:
@@ -523,8 +599,13 @@ class PersonOrientationDetector:
                     # Determine if perpendicular should point forward or backward
                     if hip_midpoint is not None and shoulder_midpoint is not None:
                         body_direction = hip_midpoint - shoulder_midpoint
-                        # Flip direction if needed based on body orientation
-                        if body_direction[1] > 0 and np.dot(perp_vector, [body_direction[0], 0]) > 0:
+                        
+                        # Project body direction onto x-axis to determine if person is facing left or right
+                        x_projection = np.dot(perp_vector, [1, 0])
+                        
+                        # If person is facing right (positive x), ensure perp_vector points right
+                        # If person is facing left (negative x), ensure perp_vector points left
+                        if x_projection < 0:
                             perp_vector = -perp_vector
                             
                     direction_vectors.append(perp_vector)
@@ -603,6 +684,11 @@ class PersonOrientationDetector:
                     if norm > 0:
                         front_direction = front_direction / norm
                         orientation = np.arctan2(front_direction[1], front_direction[0])
+        
+        # Apply Kalman filter to smooth orientation if person_id is provided
+        if person_id is not None and orientation is not None:
+            kf = self._get_or_create_filter(person_id)
+            orientation = kf.update(orientation)
         
         # ===== POSITION CALCULATION =====
         foot_position = None
