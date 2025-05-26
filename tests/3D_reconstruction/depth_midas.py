@@ -46,10 +46,10 @@ class DepthEstimator:
 
 
 # Initialize the estimator
-depth_estimator = DepthEstimator("MiDaS_small")  # MiDaS_small DPT_Hybrid DPT_Large
+depth_estimator = DepthEstimator("DPT_Large")  # MiDaS_small DPT_Hybrid DPT_Large
 
 # Read image
-img = cv2.imread("test.jpeg")
+img = cv2.imread("test_person.jpg")
 
 # Predict and get the colorized depth map
 depth_colormap = depth_estimator.predict(img)

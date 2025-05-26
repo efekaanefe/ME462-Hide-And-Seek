@@ -30,11 +30,11 @@ def create_depth_map(rgb_image_path, output_path=None):
     elapsed_ms = (end_time - start_time) * 1000
     print(f"Depth estimation took {elapsed_ms:.2f} ms")
 
-    # Convert PIL depth map to numpy array
-    depth_array = np.array(depth_map)
+    # Convert depth map to numpy array
+    depth_array = np.array(depth_map['depth'])
     
     # Resize depth map to match original image size
-    depth_resized = cv2.resize(depth_array, original_size, interpolation=cv2.INTER_LINEAR)
+    depth_resized = cv2.resize(depth_array, (original_size[0], original_size[1]), interpolation=cv2.INTER_LINEAR)
     
     # Normalize depth values to 0-255 range for visualization
     depth_normalized = ((depth_resized - depth_resized.min()) / 
@@ -55,6 +55,6 @@ def create_depth_map(rgb_image_path, output_path=None):
 # Example usage
 if __name__ == "__main__":
     # Single image processing
-    rgb_path = "test.jpeg"
+    rgb_path = "test_person.jpg"
     depth_map = create_depth_map(rgb_path)
     
