@@ -149,6 +149,7 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
 
                     # Get orientation if available
                     orientation = None
+                    axis_info = None
                     
                     # Use only MediaPipe orientation
                     if matching_person and "orientation" in matching_person:
@@ -165,6 +166,10 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
                         # Calculate orientation in map coordinates
                         map_dx, map_dy = map_dir_point[0] - mapped_point[0], map_dir_point[1] - mapped_point[1]
                         orientation = np.arctan2(map_dy, map_dx)
+                        
+                        # Get axis info if available
+                        if "axis_info" in matching_person:
+                            axis_info = matching_person["axis_info"]
 
                     mapped_people.append({
                         "track_id": track_id,
@@ -172,6 +177,7 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
                         "position": (mapped_point[0], mapped_point[1]),
                         "bbox": bbox,
                         "orientation": orientation,
+                        "axis_info": axis_info
                     })
                 except Exception as e:
                     print(f"Error mapping point: {e}")
@@ -199,16 +205,18 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
             # Draw orientation if available
-            if orientation is not None:
-                # Draw orientation arrow on frame (red)
-                center_x = (bbox[0] + bbox[2]) / 2
-                center_y = bbox[3]
-                arrow_length = 30
-                dx = int(arrow_length * np.cos(orientation))
-                dy = int(arrow_length * np.sin(orientation))
-                cv2.arrowedLine(frame, (int(center_x), int(center_y)),
-                                (int(center_x + dx), int(center_y + dy)),
-                                (0, 0, 255), 2)
+            if orientation is not None and "axis_info" in person:
+                axis_info = person["axis_info"]
+                center = axis_info["center"]
+                
+                # Draw x-axis (red) - forward direction
+                cv2.arrowedLine(frame, center, axis_info["x_axis"], (0, 0, 255), 2)
+                
+                # Draw y-axis (green) - perpendicular to x-axis
+                cv2.arrowedLine(frame, center, axis_info["y_axis"], (0, 255, 0), 2)
+                
+                # Draw z-axis (blue) - opposite to x-axis
+                cv2.arrowedLine(frame, center, axis_info["z_axis"], (255, 0, 0), 2)
 
             # Draw position and orientation on map
             map_copy = map_img.copy()

@@ -637,6 +637,7 @@ class PersonOrientationDetector:
             ])
         
         # ===== BOUNDING BOX CALCULATION =====
+        # Calculate bounding box from landmarks
         if key_points:
             points_array = np.array(list(key_points.values()))
             min_x, min_y = np.min(points_array, axis=0)
@@ -653,6 +654,31 @@ class PersonOrientationDetector:
                 int(estimated_width), 
                 int(estimated_height)
             )
+            
+        # Calculate center point and axis length
+        bbox_center_x = bbox[0] + bbox[2] // 2
+        bbox_center_y = bbox[1] + bbox[3] // 2
+        axis_length = min(bbox[2], bbox[3]) // 3  # Scale axis length based on bbox size
+        
+        # Calculate axis endpoints only if orientation is available
+        if orientation is not None:
+            x_axis_end = (
+                int(bbox_center_x + axis_length * np.cos(orientation)),
+                int(bbox_center_y + axis_length * np.sin(orientation))
+            )
+            y_axis_end = (
+                int(bbox_center_x + axis_length * np.cos(orientation + np.pi/2)),
+                int(bbox_center_y + axis_length * np.sin(orientation + np.pi/2))
+            )
+            z_axis_end = (
+                int(bbox_center_x + axis_length * np.cos(orientation + np.pi)),
+                int(bbox_center_y + axis_length * np.sin(orientation + np.pi))
+            )
+        else:
+            # Default axis endpoints when orientation is not available
+            x_axis_end = (int(bbox_center_x + axis_length), int(bbox_center_y))
+            y_axis_end = (int(bbox_center_x), int(bbox_center_y + axis_length))
+            z_axis_end = (int(bbox_center_x - axis_length), int(bbox_center_y))
         
         # ===== CONFIDENCE CALCULATION =====
         confidence = 0.5
@@ -672,7 +698,14 @@ class PersonOrientationDetector:
             "original_landmarks": original_landmarks,
             "offset": offset,
             "dimensions": (width, height),
-            "key_points_3d": key_points_3d if self.use_depth_orientation else None
+            "key_points_3d": key_points_3d if self.use_depth_orientation else None,
+            "axis_info": {
+                "center": (int(bbox_center_x), int(bbox_center_y)),
+                "x_axis": x_axis_end,
+                "y_axis": y_axis_end,
+                "z_axis": z_axis_end,
+                "axis_length": axis_length
+            }
         }
     
     def map_to_2d(self, people: List[Dict[str, Any]], room_index: int, cam_index: int) -> List[Dict[str, Any]]:
@@ -782,6 +815,26 @@ class PersonOrientationDetector:
             
             # Draw foot position
             cv2.circle(vis_image, (center_x, center_y), 5, (0, 255, 255), -1)
+            
+            # Draw orientation axes at bbox center
+            bbox_center_x = x + w // 2
+            bbox_center_y = y + h // 2
+            axis_length = min(w, h) // 3  # Scale axis length based on bbox size
+            
+            # Draw x-axis (red)
+            x_end_x = int(bbox_center_x + axis_length * np.cos(orientation))
+            x_end_y = int(bbox_center_y + axis_length * np.sin(orientation))
+            cv2.arrowedLine(vis_image, (bbox_center_x, bbox_center_y), (x_end_x, x_end_y), (0, 0, 255), 2)
+            
+            # Draw y-axis (green) - perpendicular to x-axis
+            y_end_x = int(bbox_center_x + axis_length * np.cos(orientation + np.pi/2))
+            y_end_y = int(bbox_center_y + axis_length * np.sin(orientation + np.pi/2))
+            cv2.arrowedLine(vis_image, (bbox_center_x, bbox_center_y), (y_end_x, y_end_y), (0, 255, 0), 2)
+            
+            # Draw z-axis (blue) - perpendicular to both x and y
+            z_end_x = int(bbox_center_x + axis_length * np.cos(orientation + np.pi))
+            z_end_y = int(bbox_center_y + axis_length * np.sin(orientation + np.pi))
+            cv2.arrowedLine(vis_image, (bbox_center_x, bbox_center_y), (z_end_x, z_end_y), (255, 0, 0), 2)
         
         # Now draw pose skeleton for each person
         for i, person in enumerate(people):
@@ -821,8 +874,7 @@ class PersonOrientationDetector:
                 
                 # Draw the connections
                 for start_idx, end_idx in connections:
-                    if (start_idx < len(landmarks) and end_idx < len(landmarks) and
-                        landmarks[start_idx].visibility > 0.5 and landmarks[end_idx].visibility > 0.5):
+                    if (start_idx < len(landmarks) and end_idx < len(landmarks)):
                         
                         start_x = int(landmarks[start_idx].x * orig_width + x_offset)
                         start_y = int(landmarks[start_idx].y * orig_height + y_offset)
@@ -1042,14 +1094,83 @@ def main():
     room_index = 0
     cam_index = 0
     
-    # Get input image
-    image_path = "test_images/test2.png"
-    # image_path = "test_images/test.jpeg"
-    print(f"Using image: {image_path}")
-    print(f"Room: {room_index}, Camera: {cam_index}")
+    # Open video capture
+    video_path = "test-home2.mp4"  # Change this to your video path
+    cap = cv2.VideoCapture(video_path)
     
-    # Process the image
-    detector.process_image(image_path, room_index, cam_index)
+    if not cap.isOpened():
+        print(f"Error: Could not open video file {video_path}")
+        return
+        
+    # Get video properties
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    
+    # Create video writer
+    output_path = "output_orientation.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (1600, 1200))
+    
+    # Initialize visualization window
+    cv2.namedWindow("Orientation Detection", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Orientation Detection", 1280, 720)
+    
+    # Initialize FPS calculation variables
+    fps_list = []  # Store last 30 FPS values for smoothing
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        # Start timing for FPS calculation
+        frame_start_time = time.time()
+        
+        # Rotate frame 90 degrees counterclockwise
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        
+        # Resize frame to 1600x1200
+        frame = cv2.resize(frame, (1600, 1200))
+        
+        # Convert frame to RGB for processing
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Detect people and their orientations
+        people = detector.detect_people(frame_rgb)
+        
+        # Calculate FPS
+        frame_time = time.time() - frame_start_time
+        current_fps = 1.0 / frame_time if frame_time > 0 else 0
+        
+        # Update FPS list for smoothing
+        fps_list.append(current_fps)
+        if len(fps_list) > 30:  # Keep last 30 frames
+            fps_list.pop(0)
+        fps = sum(fps_list) / len(fps_list)  # Calculate average FPS
+        
+        # Visualize detections
+        vis_frame = detector.visualize_detection(frame_rgb, people, fps)
+        
+        # Convert back to BGR for video writing
+        vis_frame = cv2.cvtColor(vis_frame, cv2.COLOR_RGB2BGR)
+        
+        # Write frame to output video
+        out.write(vis_frame)
+        
+        # Display frame
+        cv2.imshow("Orientation Detection", vis_frame)
+        
+        # Break loop on 'q' key press
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    
+    # Cleanup
+    cap.release()
+    out.release()
+    cv2.destroyAllWindows()
+    
+    print(f"Video processing complete. Output saved to {output_path}")
 
 
 if __name__ == "__main__":
