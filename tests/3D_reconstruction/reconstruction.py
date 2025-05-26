@@ -4,11 +4,11 @@ import cv2
 
 # Load color and depth as NumPy arrays
 color_np = cv2.imread("test.jpeg")  # shape: (H, W, 3)
-depth_np = cv2.imread("depth.png", cv2.IMREAD_UNCHANGED)  # shape: (H, W)
+depth_np = cv2.imread("test_depth.png", cv2.IMREAD_UNCHANGED)  # shape: (H, W)
 
-# Resize color image to match depth image size
-depth_height, depth_width = depth_np.shape
-color_np = cv2.resize(color_np, (depth_width, depth_height), interpolation=cv2.INTER_AREA)
+# Resize depth image to match color image size
+color_height, color_width = color_np.shape[:2]
+depth_np = cv2.resize(depth_np, (color_width, color_height), interpolation=cv2.INTER_NEAREST)
 
 # Convert BGR to RGB
 color_np = cv2.cvtColor(color_np, cv2.COLOR_BGR2RGB)
