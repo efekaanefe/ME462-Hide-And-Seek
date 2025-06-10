@@ -290,7 +290,7 @@ def main():
         output_path="output_tracking.mp4",
         room_index=0,
         cam_index=0,
-        headless=False,  # Set to True for headless mode
+        headless=True,  # Set to True for headless mode
         show_fps=True,   # Set to False to hide FPS
         use_depth_orientation=False
     )

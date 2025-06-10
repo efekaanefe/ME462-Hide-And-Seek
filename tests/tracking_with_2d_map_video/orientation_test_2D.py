@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 import time
 
-YOLO_CONFIDENCE_THRESHOLD = 0.9 # TODO: create a config file 
+YOLO_CONFIDENCE_THRESHOLD = 0.96 # TODO: create a config file 
 
 class DepthEstimator:
     def __init__(self, model_type="MiDaS_small"): 
