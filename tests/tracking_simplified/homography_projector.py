@@ -3,7 +3,6 @@ import numpy as np
 import json
 from typing import List, Dict, Any, Optional, Tuple
 
-# TODO: 
 
 class HomographyProjector:
     """Handles 2D mapping of camera coordinates to map coordinates using homography."""

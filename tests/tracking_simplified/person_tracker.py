@@ -109,6 +109,9 @@ class PersonTracker:
             if 'map_orientation' in det:
                 self.tracked_objects[track_id]['map_orientation'] = det['map_orientation']
                 
+            # Add track_id to detection
+            det['track_id'] = track_id
+                
         # Create new tracks for unmatched detections
         for det_idx in unmatched_detections:
             det = detections[det_idx]
@@ -128,6 +131,8 @@ class PersonTracker:
                 new_track['orientation'] = det['orientation']
                 
             self.tracked_objects[self.next_id] = new_track
+            # Add track_id to detection
+            det['track_id'] = self.next_id
             self.next_id += 1
             
         # Update unmatched tracks

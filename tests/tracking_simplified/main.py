@@ -70,18 +70,92 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
         frame_start_time = time.time()
         
         
-        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE) # Rotate 
-        frame = cv2.resize(frame, (1600, 1200)) # Resize frame to 1600x1200
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        frame = cv2.resize(frame, (1600, 1200)) 
 
-        # TODO: why fps is around 2?
 
-        # Process frame through pipeline
+
+        # # Process frame through pipeline
+        # detections = detector.update(frame)
+        # detections = recognizer.update(frame, detections)
+        # detections = orientation.update(frame, detections)
+        # detections = projector.update(detections)
+        # tracks = tracker.update(detections, time.time())
+
+
+        # Detector: 46.85 ms (7.22%)
+        # Recognizer: 501.35 ms (77.30%)
+        # Orientation: 100.29 ms (15.46%)
+        # Projector: 0.04 ms (0.01%)
+        # Tracker: 0.06 ms (0.01%)
+
+        # Detector: 48.17 ms (31.98%)
+        # Tracker: 0.09 ms (0.06%)
+        # Recognizer: 0.45 ms (0.30%)
+        # Orientation: 101.84 ms (67.63%)
+        # Projector: 0.04 ms (0.03%)
+        # Total pipeline time: 150.60 ms
+
+
+        start = time.perf_counter()
+
+        # Step 1: Detector
+        t0 = time.perf_counter()
         detections = detector.update(frame)
-        detections = recognizer.update(frame, detections)
-        detections = orientation.update(frame, detections)
-        detections = projector.update(detections)
+        t1 = time.perf_counter()
+
+        # Step 2: Tracker (moved before recognizer to assign track_ids)
         tracks = tracker.update(detections, time.time())
-        
+        t2 = time.perf_counter()
+
+        # Step 3: Recognizer 
+        print("-"*50)
+        print("Before recognizer:", detections[0].keys() if detections else "No detections")
+        detections = recognizer.update(frame, detections)
+        print("After recognizer:", detections[0].keys() if detections else "No detections")
+        t3 = time.perf_counter()
+
+        # Step 4: Orientation
+        detections = orientation.update(frame, detections)
+        t4 = time.perf_counter()
+
+        # Step 5: Projector
+        detections = projector.update(detections)
+        t5 = time.perf_counter()
+
+        # Step 6: Update tracker again with all the enriched detection data
+        tracks = tracker.update(detections, time.time())
+
+        # Step 7: Clean up old recognition cache entries
+        active_track_ids = list(tracks.keys())
+        recognizer.cleanup_old_tracks(active_track_ids)
+
+        # Timing calculations (same as before)
+        times = {
+            "Detector": (t1 - t0) * 1000,
+            "Tracker": (t2 - t1) * 1000,
+            "Recognizer": (t3 - t2) * 1000,
+            "Orientation": (t4 - t3) * 1000,
+            "Projector": (t5 - t4) * 1000
+        }
+
+        total_time = sum(times.values())
+
+        # Print performance stats every 30 frames (optional)
+        frame_count = getattr(run_tracking, 'frame_count', 0) + 1
+        run_tracking.frame_count = frame_count
+
+        # Print results
+        print("-"*30)
+        for step, t in times.items():
+            print(f"{step}: {t:.2f} ms ({(t / total_time * 100):.2f}%)")
+
+        print(f"Total pipeline time: {total_time:.2f} ms")
+        print("-"*30)
+
+
+
+
         # Calculate FPS
         frame_time = time.time() - frame_start_time
         current_fps = 1.0 / frame_time if frame_time > 0 else 0
@@ -102,27 +176,27 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
         # Draw map visualization using projector
         vis_frame = projector.visualize(vis_frame, list(tracks.values()))
         
-        print(tracks)
+        # print(tracks)
         
-        # Publish tracking data to MQTT
+        # # Publish tracking data to MQTT
         # if publisher.is_connected:
-        for track_id, track in tracks.items():
-            print(track)
-            if 'map_position' in track:
-                position_data = {
-                    "track_id": track_id,
-                    "name": track.get('name', 'Unknown'),
-                    "x": float(track['map_position'][0]),
-                    "y": float(track['map_position'][1]),
-                    "orientation": float(track['orientation']) if 'orientation' in track else None,
-                    "timestamp": time.time()
-                }
-                # publisher.publish(
-                #     f"game/player/position/{track_id}", 
-                #     json.dumps(position_data), 
-                #     qos=1
-                # )
-                print(f"{track['map_position'][0]}, {track['map_position'][1]}")
+        #     for track_id, track in tracks.items():
+        #         print(track)
+        #         if 'map_position' in track:
+        #             position_data = {
+        #                 "track_id": track_id,
+        #                 "name": track.get('name', 'Unknown'),
+        #                 "x": float(track['map_position'][0]),
+        #                 "y": float(track['map_position'][1]),
+        #                 "orientation": float(track['orientation']) if 'orientation' in track else None,
+        #                 "timestamp": time.time()
+        #             }
+        #             # publisher.publish(
+        #             #     f"game/player/position/{track_id}", 
+        #             #     json.dumps(position_data), 
+        #             #     qos=1
+        #             # )
+        #             print(f"{track['map_position'][0]}, {track['map_position'][1]}")
 
 
         
