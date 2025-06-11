@@ -88,6 +88,7 @@ def run_tracking(video_path: str, output_path: str, room_index: int = 0, cam_ind
         # Orientation: 100.29 ms (15.46%)
         # Projector: 0.04 ms (0.01%)
         # Tracker: 0.06 ms (0.01%)
+        #Total pipeline time: 648.59 ms
 
         # Detector: 48.17 ms (31.98%)
         # Tracker: 0.09 ms (0.06%)
