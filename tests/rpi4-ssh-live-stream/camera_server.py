@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import cv2
 from flask import Flask, Response
 import threading
