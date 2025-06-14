@@ -5,7 +5,7 @@ from utils.homography_projector import HomographyProjector
 from utils.orientation_detector import OrientationDetector
 from utils.person_tracker import PersonTracker
 from utils.MQTTPublisher import MQTTPublisher
-from utils.UDPClient import UDPClient, SimpleUDPClient  # Import the UDP clients
+from utils.UDPClient import UDPClient 
 import json
 import cv2
 import time 

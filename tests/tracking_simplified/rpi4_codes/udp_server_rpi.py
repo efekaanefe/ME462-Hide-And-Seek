@@ -59,11 +59,18 @@ class UDPStreamServer:
     def capture_frames(self):
         """Capture frames from camera continuously"""
         print("Starting frame capture thread...")
+        frame_count = 0
         
         while self.running:
             if self.camera and self.camera.isOpened():
                 ret, frame = self.camera.read()
                 if ret and frame is not None:
+                    frame_count += 1
+                    
+                    # Debug info every 100 frames
+                    if frame_count % 100 == 0:
+                        print(f"Captured {frame_count} frames, current shape: {frame.shape}")
+                    
                     # Check if the frame is flattened color data
                     if len(frame.shape) == 2 and frame.shape[0] == 1 and frame.shape[1] == (640 * 480 * 3):
                         try:
@@ -162,6 +169,7 @@ class UDPStreamServer:
         print("Starting frame broadcast thread...")
         last_frame_time = 0
         frame_interval = 1.0 / 15  # 15 FPS
+        broadcast_count = 0
         
         while self.running:
             current_time = time.time()
@@ -170,6 +178,14 @@ class UDPStreamServer:
             if current_time - last_frame_time < frame_interval:
                 time.sleep(0.01)
                 continue
+            
+            # Debug info every 100 broadcasts
+            broadcast_count += 1
+            if broadcast_count % 100 == 0:
+                with self.clients_lock:
+                    print(f"DEBUG: Broadcast #{broadcast_count}, {len(self.clients)} clients registered")
+                    if self.current_frame is not None:
+                        print(f"DEBUG: Current frame shape: {self.current_frame.shape}")
                 
             with self.frame_lock:
                 if self.current_frame is not None:
@@ -239,11 +255,13 @@ class UDPStreamServer:
             # Keep main thread alive
             try:
                 while self.running:
-                    time.sleep(1)
+                    time.sleep(10)
                     # Print status every 10 seconds
                     with self.clients_lock:
                         if len(self.clients) > 0:
-                            print(f"Broadcasting to {len(self.clients)} clients: {list(self.clients)}")
+                            print(f"Status: Broadcasting to {len(self.clients)} clients: {list(self.clients)}")
+                        else:
+                            print("Status: No clients connected, waiting for connections...")
                         
             except KeyboardInterrupt:
                 print("\nShutting down server...")
@@ -256,3 +274,37 @@ class UDPStreamServer:
                 self.camera.release()
             server_socket.close()
             print("UDP Server stopped")
+
+
+def main():
+    """Main function to start the UDP stream server"""
+    print("=== UDP Stream Server ===")
+    print("Starting video streaming server...")
+    
+    # Configuration options
+    config = {
+        'host': '0.0.0.0',           # Listen on all interfaces
+        'port': 8080,                # Default port
+        'max_packet_size': 60000,    # UDP packet size limit
+        'use_jpeg': False,           # Set to True for JPEG compression
+        'jpeg_quality': 80           # JPEG quality (1-100)
+    }
+    
+    print(f"Configuration:")
+    for key, value in config.items():
+        print(f"  {key}: {value}")
+    print()
+    
+    # Create and start server
+    server = UDPStreamServer(**config)
+    
+    try:
+        server.start_server()
+    except Exception as e:
+        print(f"Failed to start server: {e}")
+    
+    print("Server shutdown complete.")
+
+
+if __name__ == "__main__":
+    main()
