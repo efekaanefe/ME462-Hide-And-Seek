@@ -48,8 +48,17 @@ class TCPStreamServer:
             if self.camera and self.camera.isOpened():
                 ret, frame = self.camera.read()
                 if ret and frame is not None:
-                    # Ensure frame is in correct format (BGR)
-                    if len(frame.shape) == 3 and frame.shape[2] == 3:
+                # Check if the frame is flattened color data
+                    if len(frame.shape) == 2 and frame.shape[0] == 1 and frame.shape[1] == (640 * 480 * 3):
+                        try:
+                            # Reshape to (height, width, channels)
+                            reshaped_frame = frame.reshape((480, 640, 3))
+                            with self.frame_lock:
+                                self.current_frame = reshaped_frame.copy()
+                        except ValueError as e:
+                            print(f"Failed to reshape frame: {e}. Original shape: {frame.shape}")
+                    elif len(frame.shape) == 3 and frame.shape[2] == 3:
+                        # This is the expected format, no reshaping needed
                         with self.frame_lock:
                             self.current_frame = frame.copy()
                     else:
