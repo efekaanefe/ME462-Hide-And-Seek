@@ -45,12 +45,9 @@ def run_tracking_with_udp(host: str, port: int = 8080, output_path: str = None,
     projector.select_camera(cam_index)
     
     # Initialize UDP client instead of TCP client
-    if use_simple_client:
-        udp_client = SimpleUDPClient(host, port)
-        print("Using SimpleUDPClient for JPEG frames")
-    else:
-        udp_client = UDPClient(host, port)
-        print("Using UDPClient for pickled frames")
+    
+    udp_client = UDPClient(host, port)
+    print("Using UDPClient for pickled frames")
         
     if not udp_client.connect():
         print("Failed to initialize UDP client")
@@ -181,9 +178,6 @@ def run_tracking_with_udp(host: str, port: int = 8080, output_path: str = None,
             # Display latency below FPS
             cv2.putText(vis_frame, f"Latency: {latency_ms:.1f}ms", (1300, 70),
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-            # Display frame count
-            cv2.putText(vis_frame, f"Frames: {frame_count}", (1300, 110),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
                        
         # Draw tracking results
         vis_frame = tracker.visualize(vis_frame, tracks)
