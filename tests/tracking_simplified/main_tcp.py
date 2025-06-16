@@ -208,7 +208,7 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
 def main():
     # Example usage - replace with your Pi's IP
     run_tracking_with_tcp(
-        host="192.168.68.59",  # Your Raspberry Pi IP
+        host="192.168.68.58",  # Your Raspberry Pi IP
         port=8080,
         output_path="output_tracking_live.mp4",  # Optional
         room_index=0,
