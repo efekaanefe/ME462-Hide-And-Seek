@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-from utils.person_detector import PersonDetector
-from utils.face_recognizer import FaceRecognizer
-from utils.homography_projector import HomographyProjector
-from utils.orientation_detector import OrientationDetector
-from utils.person_tracker import PersonTracker
-from utils.MQTTPublisher import MQTTPublisher
-from utils.TCPClient import TCPClient
+from utils import PersonDetector
+from utils import FaceRecognizer
+from utils import HomographyProjector
+from utils import OrientationDetector
+from utils import PersonTracker
+from utils import MQTTPublisher
+from utils import TCPClient
+
 import json
 import cv2
 import time 
