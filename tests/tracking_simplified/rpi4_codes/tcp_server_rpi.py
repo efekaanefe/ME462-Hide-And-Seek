@@ -7,41 +7,157 @@ import threading
 import time
 
 class TCPStreamServer:
-    def __init__(self, host='0.0.0.0', port=8080):
+    def __init__(self, host='192.168.0.135', port=8080, width=640, height=480, fps=30):
         self.host = host
         self.port = port
+        self.target_width = width
+        self.target_height = height
+        self.target_fps = fps
         self.camera = None
         self.running = False
         self.current_frame = None
         self.frame_lock = threading.Lock()
+        self.actual_width = None
+        self.actual_height = None
+        
+        # Common resolution presets
+        self.resolution_presets = {
+            'qvga': (320, 240),
+            'vga': (640, 480),
+            'svga': (800, 600),
+            'hd': (1280, 720),
+            'fhd': (1920, 1080),
+            '4k': (3840, 2160),
+            'pi_hq_max': (4056, 3040),
+            'pi_v2_max': (2592, 1944)
+        }
+        
+    def get_supported_resolutions(self, camera):
+        """Test common resolutions to find supported ones"""
+        supported = []
+        test_resolutions = [
+            (320, 240), (640, 480), (800, 600), (1024, 768),
+            (1280, 720), (1280, 960), (1600, 1200), (1920, 1080),
+            (2560, 1440), (2592, 1944), (3840, 2160), (4056, 3040)
+        ]
+        
+        print("Testing supported resolutions...")
+        for width, height in test_resolutions:
+            camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            
+            actual_w = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            if actual_w == width and actual_h == height:
+                supported.append((width, height))
+                print(f"  ✓ {width}x{height}")
+            else:
+                print(f"  ✗ {width}x{height} -> {actual_w}x{actual_h}")
+                
+        return supported
+        
+    def set_resolution_from_preset(self, preset_name):
+        """Set resolution from preset name"""
+        if preset_name.lower() in self.resolution_presets:
+            self.target_width, self.target_height = self.resolution_presets[preset_name.lower()]
+            print(f"Using preset '{preset_name}': {self.target_width}x{self.target_height}")
+            return True
+        return False
         
     def initialize_camera(self):
-        """Initialize camera with safe settings"""
-        for i in range(3):
-            print(f"Trying camera {i}...")
-            self.camera = cv2.VideoCapture(i)
+        """Initialize camera with flexible resolution support"""
+        print(f"Trying camera {0}...")
+        self.camera = cv2.VideoCapture(0)
+        
+        if self.camera.isOpened():
+            # First, get supported resolutions
+            supported_resolutions = self.get_supported_resolutions(self.camera)
             
-            if self.camera.isOpened():
-                # Set conservative settings
-                #self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                #self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-
-                self.camera.set(cv2.CAP_PROP_FPS, 30)
-                self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            if not supported_resolutions:
+                print(f"Camera 0: No supported resolutions found")
+                self.camera.release()
+            
+            # Try to set target resolution
+            print(f"Setting target resolution: {self.target_width}x{self.target_height}")
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.target_width)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
+            self.camera.set(cv2.CAP_PROP_FPS, self.target_fps)
+            self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            
+            # Get actual resolution set
+            self.actual_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.actual_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            actual_fps = self.camera.get(cv2.CAP_PROP_FPS)
+            
+            print(f"Actual settings: {self.actual_width}x{self.actual_height} @ {actual_fps:.1f} FPS")
+            
+            # Test capture with actual resolution
+            ret, frame = self.camera.read()
+            if ret and frame is not None:
+                print(f"Camera {0} working!")
+                print(f"Frame shape: {frame.shape}")
+                print(f"Frame dtype: {frame.dtype}")
+                print(f"Frame stats: min={frame.min()}, max={frame.max()}, mean={frame.mean():.1f}")
                 
-                # Test capture
-                ret, frame = self.camera.read()
-                if ret and frame is not None:
-                    print(f"Camera {i} working: {frame.shape}, dtype: {frame.dtype}")
-                    print(f"Frame stats: min={frame.min()}, max={frame.max()}, mean={frame.mean():.1f}")
-                    return True
+                # Verify frame dimensions match expected
+                if len(frame.shape) >= 2:
+                    frame_h, frame_w = frame.shape[:2]
+                    if frame_h != self.actual_height or frame_w != self.actual_width:
+                        print(f"Warning: Frame size {frame_w}x{frame_h} doesn't match camera settings")
+                        
+                return True
                     
                 self.camera.release()
         
         print("No working camera found")
         return False
+    
+    def process_frame(self, frame):
+        if frame is None:
+            return None
+
+        if len(frame.shape) == 2:
+            if frame.shape[0] == 1:
+                total_pixels = frame.shape[1]
+                expected_bgr_pixels = self.actual_width * self.actual_height * 3
+                expected_gray_pixels = self.actual_width * self.actual_height
+
+                if total_pixels >= expected_bgr_pixels:
+                    try:
+                        frame = frame[:, :expected_bgr_pixels]
+                        frame = frame.reshape((self.actual_height, self.actual_width, 3))
+                    except ValueError:
+                        return None
+                elif total_pixels >= expected_gray_pixels:
+                    try:
+                        frame = frame[:, :expected_gray_pixels]
+                        frame = frame.reshape((self.actual_height, self.actual_width))
+                        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                    except ValueError:
+                        return None
+                else:
+                    return None
+            else:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        elif len(frame.shape) == 3:
+            if frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+            elif frame.shape[2] == 1:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        else:
+            return None
+
+        if (frame.shape[1], frame.shape[0]) != (self.target_width, self.target_height):
+            if self.target_width != self.actual_width or self.target_height != self.actual_height:
+                frame = cv2.resize(frame, (self.target_width, self.target_height))
+
+        if frame is not None and frame.shape[2] == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        return frame
+
     
     def capture_frames(self):
         """Capture frames from camera continuously"""
@@ -51,21 +167,12 @@ class TCPStreamServer:
             if self.camera and self.camera.isOpened():
                 ret, frame = self.camera.read()
                 if ret and frame is not None:
-                # Check if the frame is flattened color data
-                    if len(frame.shape) == 2 and frame.shape[0] == 1 and frame.shape[1] == (640 * 480 * 3):
-                        try:
-                            # Reshape to (height, width, channels)
-                            reshaped_frame = frame.reshape((480, 640, 3))
-                            with self.frame_lock:
-                                self.current_frame = reshaped_frame.copy()
-                        except ValueError as e:
-                            print(f"Failed to reshape frame: {e}. Original shape: {frame.shape}")
-                    elif len(frame.shape) == 3 and frame.shape[2] == 3:
-                        # This is the expected format, no reshaping needed
+                    processed_frame = self.process_frame(frame)
+                    if processed_frame is not None:
                         with self.frame_lock:
-                            self.current_frame = frame.copy()
+                            self.current_frame = processed_frame.copy()
                     else:
-                        print(f"Unexpected frame format: {frame.shape}")
+                        print("Frame processing failed")
                 else:
                     print("Failed to capture frame")
                     time.sleep(0.1)
@@ -76,6 +183,20 @@ class TCPStreamServer:
     def handle_client(self, client_socket, addr):
         """Handle individual client connections"""
         print(f"Client connected: {addr}")
+        
+        # Send resolution info to client
+        try:
+            resolution_info = {
+                'width': self.target_width,
+                'height': self.target_height,
+                'fps': self.target_fps
+            }
+            info_data = pickle.dumps(resolution_info)
+            client_socket.sendall(struct.pack('!I', len(info_data)))
+            client_socket.sendall(info_data)
+            print(f"Sent resolution info to {addr}: {resolution_info}")
+        except Exception as e:
+            print(f"Failed to send resolution info to {addr}: {e}")
         
         try:
             while self.running:
@@ -99,7 +220,7 @@ class TCPStreamServer:
                         print(f"Error sending to client {addr}: {e}")
                         break
                         
-                time.sleep(1/30)  # Control frame rate (15 FPS)
+                time.sleep(1/self.target_fps)  # Control frame rate
                 
         except Exception as e:
             print(f"Client {addr} error: {e}")
@@ -120,6 +241,7 @@ class TCPStreamServer:
             server_socket.listen(5)
             
             print(f"TCP Server listening on {self.host}:{self.port}")
+            print(f"Streaming at {self.target_width}x{self.target_height} @ {self.target_fps} FPS")
             self.running = True
             
             # Start frame capture thread
@@ -152,6 +274,7 @@ class TCPStreamServer:
                 self.camera.release()
             server_socket.close()
             print("Server stopped")
+
 
 if __name__ == "__main__":
     server = TCPStreamServer()
