@@ -142,13 +142,13 @@ class TCPStreamServer:
                 else:
                     return None
             else:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
 
         elif len(frame.shape) == 3:
             if frame.shape[2] == 4:
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
             elif frame.shape[2] == 1:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
         else:
             return None
 
