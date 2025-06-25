@@ -68,48 +68,47 @@ class TCPStreamServer:
         
     def initialize_camera(self):
         """Initialize camera with flexible resolution support"""
-        for i in range(3):
-            print(f"Trying camera {i}...")
-            self.camera = cv2.VideoCapture(i)
+        print(f"Trying camera {0}...")
+        self.camera = cv2.VideoCapture(0)
+        
+        if self.camera.isOpened():
+            # First, get supported resolutions
+            supported_resolutions = self.get_supported_resolutions(self.camera)
             
-            if self.camera.isOpened():
-                # First, get supported resolutions
-                supported_resolutions = self.get_supported_resolutions(self.camera)
+            if not supported_resolutions:
+                print(f"Camera {i}: No supported resolutions found")
+                self.camera.release()
+                continue
+            
+            # Try to set target resolution
+            print(f"Setting target resolution: {self.target_width}x{self.target_height}")
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.target_width)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
+            self.camera.set(cv2.CAP_PROP_FPS, self.target_fps)
+            self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            
+            # Get actual resolution set
+            self.actual_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.actual_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            actual_fps = self.camera.get(cv2.CAP_PROP_FPS)
+            
+            print(f"Actual settings: {self.actual_width}x{self.actual_height} @ {actual_fps:.1f} FPS")
+            
+            # Test capture with actual resolution
+            ret, frame = self.camera.read()
+            if ret and frame is not None:
+                print(f"Camera {i} working!")
+                print(f"Frame shape: {frame.shape}")
+                print(f"Frame dtype: {frame.dtype}")
+                print(f"Frame stats: min={frame.min()}, max={frame.max()}, mean={frame.mean():.1f}")
                 
-                if not supported_resolutions:
-                    print(f"Camera {i}: No supported resolutions found")
-                    self.camera.release()
-                    continue
-                
-                # Try to set target resolution
-                print(f"Setting target resolution: {self.target_width}x{self.target_height}")
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.target_width)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
-                self.camera.set(cv2.CAP_PROP_FPS, self.target_fps)
-                self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                
-                # Get actual resolution set
-                self.actual_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
-                self.actual_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                actual_fps = self.camera.get(cv2.CAP_PROP_FPS)
-                
-                print(f"Actual settings: {self.actual_width}x{self.actual_height} @ {actual_fps:.1f} FPS")
-                
-                # Test capture with actual resolution
-                ret, frame = self.camera.read()
-                if ret and frame is not None:
-                    print(f"Camera {i} working!")
-                    print(f"Frame shape: {frame.shape}")
-                    print(f"Frame dtype: {frame.dtype}")
-                    print(f"Frame stats: min={frame.min()}, max={frame.max()}, mean={frame.mean():.1f}")
-                    
-                    # Verify frame dimensions match expected
-                    if len(frame.shape) >= 2:
-                        frame_h, frame_w = frame.shape[:2]
-                        if frame_h != self.actual_height or frame_w != self.actual_width:
-                            print(f"Warning: Frame size {frame_w}x{frame_h} doesn't match camera settings")
-                            
-                    return True
+                # Verify frame dimensions match expected
+                if len(frame.shape) >= 2:
+                    frame_h, frame_w = frame.shape[:2]
+                    if frame_h != self.actual_height or frame_w != self.actual_width:
+                        print(f"Warning: Frame size {frame_w}x{frame_h} doesn't match camera settings")
+                        
+                return True
                     
                 self.camera.release()
         
@@ -142,19 +141,22 @@ class TCPStreamServer:
                 else:
                     return None
             else:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
         elif len(frame.shape) == 3:
             if frame.shape[2] == 4:
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
             elif frame.shape[2] == 1:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         else:
             return None
 
         if (frame.shape[1], frame.shape[0]) != (self.target_width, self.target_height):
             if self.target_width != self.actual_width or self.target_height != self.actual_height:
                 frame = cv2.resize(frame, (self.target_width, self.target_height))
+
+        if frame is not None and frame.shape[2] == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         return frame
 
