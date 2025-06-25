@@ -76,9 +76,8 @@ class TCPStreamServer:
             supported_resolutions = self.get_supported_resolutions(self.camera)
             
             if not supported_resolutions:
-                print(f"Camera {i}: No supported resolutions found")
+                print(f"Camera 0: No supported resolutions found")
                 self.camera.release()
-                continue
             
             # Try to set target resolution
             print(f"Setting target resolution: {self.target_width}x{self.target_height}")
