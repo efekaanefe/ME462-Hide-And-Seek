@@ -8,7 +8,7 @@ import time
 import argparse
 
 class TCPStreamServer:
-    def __init__(self, host='0.0.0.0', port=8080, width=640, height=480, fps=30):
+    def __init__(self, host='192.168.0.135', port=8080, width=640, height=480, fps=30):
         self.host = host
         self.port = port
         self.target_width = width
@@ -117,54 +117,45 @@ class TCPStreamServer:
         return False
     
     def process_frame(self, frame):
-        """Process frame to handle different formats and resolutions"""
         if frame is None:
             return None
-            
-        # Handle different frame formats
+
         if len(frame.shape) == 2:
-            # Grayscale or flattened data
             if frame.shape[0] == 1:
-                # Possibly flattened color data
                 total_pixels = frame.shape[1]
-                expected_pixels = self.actual_width * self.actual_height * 3
-                
-                if total_pixels == expected_pixels:
+                expected_bgr_pixels = self.actual_width * self.actual_height * 3
+                expected_gray_pixels = self.actual_width * self.actual_height
+
+                if total_pixels == expected_bgr_pixels:
                     try:
                         frame = frame.reshape((self.actual_height, self.actual_width, 3))
-                        print("Reshaped flattened color frame")
-                    except ValueError as e:
-                        print(f"Failed to reshape frame: {e}")
+                    except ValueError:
+                        return None
+                elif total_pixels == expected_gray_pixels:
+                    try:
+                        frame = frame.reshape((self.actual_height, self.actual_width))
+                        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                    except ValueError:
                         return None
                 else:
-                    print(f"Unexpected flattened frame size: {total_pixels} vs expected {expected_pixels}")
                     return None
             else:
-                # Regular grayscale frame
-                print("Converting grayscale to BGR")
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-                
+
         elif len(frame.shape) == 3:
-            # Color frame
             if frame.shape[2] == 4:
-                # RGBA to BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
             elif frame.shape[2] == 1:
-                # Single channel to BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-            # BGR frames are already in correct format
-            
         else:
-            print(f"Unexpected frame format: {frame.shape}")
             return None
-            
-        # Resize if requested resolution differs from actual
+
         if (frame.shape[1], frame.shape[0]) != (self.target_width, self.target_height):
             if self.target_width != self.actual_width or self.target_height != self.actual_height:
-                print(f"Resizing from {frame.shape[1]}x{frame.shape[0]} to {self.target_width}x{self.target_height}")
                 frame = cv2.resize(frame, (self.target_width, self.target_height))
-                
+
         return frame
+
     
     def capture_frames(self):
         """Capture frames from camera continuously"""
