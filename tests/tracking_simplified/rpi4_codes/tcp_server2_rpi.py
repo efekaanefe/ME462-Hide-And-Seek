@@ -126,13 +126,15 @@ class TCPStreamServer:
                 expected_bgr_pixels = self.actual_width * self.actual_height * 3
                 expected_gray_pixels = self.actual_width * self.actual_height
 
-                if total_pixels == expected_bgr_pixels:
+                if total_pixels >= expected_bgr_pixels:
                     try:
+                        frame = frame[:, :expected_bgr_pixels]
                         frame = frame.reshape((self.actual_height, self.actual_width, 3))
                     except ValueError:
                         return None
-                elif total_pixels == expected_gray_pixels:
+                elif total_pixels >= expected_gray_pixels:
                     try:
+                        frame = frame[:, :expected_gray_pixels]
                         frame = frame.reshape((self.actual_height, self.actual_width))
                         frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
                     except ValueError:
