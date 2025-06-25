@@ -96,7 +96,7 @@ class TCPStreamServer:
             # Test capture with actual resolution
             ret, frame = self.camera.read()
             if ret and frame is not None:
-                print(f"Camera {i} working!")
+                print(f"Camera {0} working!")
                 print(f"Frame shape: {frame.shape}")
                 print(f"Frame dtype: {frame.dtype}")
                 print(f"Frame stats: min={frame.min()}, max={frame.max()}, mean={frame.mean():.1f}")
