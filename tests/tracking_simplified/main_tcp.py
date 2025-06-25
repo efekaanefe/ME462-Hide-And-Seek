@@ -10,6 +10,17 @@ import json
 import cv2
 import time 
 
+import configparser
+
+def get_camera_ip(room: str, camera: str, config_path="ip_config.ini") -> str:
+    config = configparser.ConfigParser()
+    config.read(config_path)
+
+    try:
+        return config[room][camera]
+    except KeyError:
+        raise ValueError(f"No IP found for {room}.{camera}")
+
 
 def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None, 
                          room_index: int = 0, cam_index: int = 0,
@@ -206,9 +217,12 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
     print(f"Average Latency: {latency_ms:.1f}ms")
 
 def main():
-    # Example usage - replace with your Pi's IP
+    room = "room0"
+    camera = "cam0"
+    ip = get_camera_ip(room, camera)
+
     run_tracking_with_tcp(
-        host="192.168.68.58",  # Your Raspberry Pi IP
+        host=ip,  # Your Raspberry Pi IP
         port=8080,
         output_path="output_tracking_live.mp4",  # Optional
         room_index=0,
