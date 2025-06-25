@@ -79,6 +79,9 @@ class TCPClient:
             
             # Deserialize frame
             frame = pickle.loads(frame_data)
+
+            print(f"Frame shape: {frame.shape}")
+
             return frame
             
         except Exception as e:

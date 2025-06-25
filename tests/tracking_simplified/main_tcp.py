@@ -93,7 +93,8 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
         
         # Process frame (same as original)
         # frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        frame = cv2.resize(frame, (1600, 1200))
+        #frame = cv2.resize(frame, (1600, 1200))
+        frame = cv2.resize(frame, (1920, 1080))
 
         # Your original processing pipeline
         start = time.perf_counter()
@@ -141,12 +142,12 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
         total_time = sum(times.values())
         frame_count += 1
 
-        # Print results
-        print("-"*30)
-        for step, t in times.items():
-            print(f"{step}: {t:.2f} ms ({(t / total_time * 100):.2f}%)")
-        print(f"Total pipeline time: {total_time:.2f} ms")
-        print("-"*30)
+        # # Print results
+        # print("-"*30)
+        # for step, t in times.items():
+        #     print(f"{step}: {t:.2f} ms ({(t / total_time * 100):.2f}%)")
+        # print(f"Total pipeline time: {total_time:.2f} ms")
+        # print("-"*30)
 
         # Calculate FPS and latency
         frame_time = time.time() - frame_start_time
