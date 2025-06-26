@@ -220,7 +220,7 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
 
 def main():
     room = "room0"
-    camera = "cam0"
+    camera = "cam1"
     ip = get_camera_ip(room, camera)
 
     run_tracking_with_tcp(
