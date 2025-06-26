@@ -193,3 +193,90 @@ class TCPClient:
         self.connected = False
         self.stream_info = None
         print("TCP client disconnected")
+
+
+# Example usage and test client
+def main():
+    import argparse
+    import time
+    
+    parser = argparse.ArgumentParser(description='TCP Video Stream Client')
+    parser.add_argument('host', help='Server IP address')
+    parser.add_argument('--port', type=int, default=8080, help='Server port (default: 8080)')
+    parser.add_argument('--timeout', type=int, default=10, help='Connection timeout (default: 10)')
+    parser.add_argument('--display', action='store_true', help='Display video in OpenCV window')
+    parser.add_argument('--save', help='Save video to file (e.g., output.avi)')
+    parser.add_argument('--max-frames', type=int, help='Maximum frames to receive')
+    
+    args = parser.parse_args()
+    
+    # Create and connect client
+    client = TCPClient(args.host, args.port, args.timeout)
+    
+    if not client.connect():
+        print("Failed to connect to server")
+        return
+    
+    # Get stream info
+    stream_info = client.get_stream_info()
+    print(f"Stream info: {stream_info}")
+    
+    # Setup video writer if saving
+    video_writer = None
+    if args.save:
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        video_writer = cv2.VideoWriter(
+            args.save, 
+            fourcc, 
+            stream_info['fps'], 
+            (stream_info['width'], stream_info['height'])
+        )
+        print(f"Saving video to: {args.save}")
+    
+    try:
+        print("Receiving frames... (Press 'q' to quit)")
+        start_time = time.time()
+        
+        while True:
+            frame = client.get_frame()
+            
+            if frame is None:
+                print("No frame received, connection may be lost")
+                break
+            
+            # Save frame if requested
+            if video_writer:
+                video_writer.write(frame)
+            
+            # Display frame if requested
+            if args.display:
+                cv2.imshow('TCP Stream', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            
+            # Check max frames limit
+            if args.max_frames and client.get_frame_count() >= args.max_frames:
+                print(f"Reached maximum frames ({args.max_frames})")
+                break
+        
+        # Print statistics
+        elapsed_time = time.time() - start_time
+        frame_count = client.get_frame_count()
+        if elapsed_time > 0:
+            fps = frame_count / elapsed_time
+            print(f"Received {frame_count} frames in {elapsed_time:.1f}s ({fps:.1f} FPS)")
+    
+    except KeyboardInterrupt:
+        print("\nStopping...")
+    
+    finally:
+        # Cleanup
+        if video_writer:
+            video_writer.release()
+        if args.display:
+            cv2.destroyAllWindows()
+        client.disconnect()
+
+
+if __name__ == "__main__":
+    main()

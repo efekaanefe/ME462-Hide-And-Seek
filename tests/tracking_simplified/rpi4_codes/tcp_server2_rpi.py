@@ -152,6 +152,7 @@ class TCPStreamServer:
 
         if (frame.shape[1], frame.shape[0]) != (self.target_width, self.target_height):
             if self.target_width != self.actual_width or self.target_height != self.actual_height:
+                print(f"Resized from {self.actual_width}x{self.actual_height} to {self.target_width}x{self.target_height}")
                 frame = cv2.resize(frame, (self.target_width, self.target_height))
 
         if frame is not None and frame.shape[2] == 3:

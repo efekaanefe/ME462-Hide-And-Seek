@@ -63,12 +63,12 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
     out = None
     if output_path:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, 30, (1600, 1200))  # Adjust fps as needed
+        out = cv2.VideoWriter(output_path, fourcc, 30, (1920, 1080))  # Adjust fps as needed
 
     # Initialize visualization window if not headless
     if not headless:
         cv2.namedWindow("Tracking", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Tracking", 1280, 720)
+        cv2.resizeWindow("Tracking", 1920, 1080)
         
     # Initialize FPS and latency calculation
     fps_list = []
@@ -95,7 +95,8 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
         # frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
         #frame = cv2.resize(frame, (1600, 1200))
         frame = cv2.resize(frame, (1920, 1080))
-
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
         # Your original processing pipeline
         start = time.perf_counter()
 

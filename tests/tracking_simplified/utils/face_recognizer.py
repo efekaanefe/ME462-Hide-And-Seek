@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional, Tuple
 class FaceRecognizer:
     """Handles face recognition using ArcFace."""
     
-    def __init__(self, known_people_dir: str = "known_people", reid_interval: float = 20.0):
+    def __init__(self, known_people_dir: str = "known_people", reid_interval: float = 2.0):
         """Initialize the face recognizer.
         
         Args:
@@ -22,8 +22,8 @@ class FaceRecognizer:
         # Load known people database
         self.known_people_dir = known_people_dir
         self.known_people = {}  # {name: {'features': [feature_vectors], 'images': [image_paths]}}
-        self.similarity_threshold = 0.55  # Cosine similarity threshold
-        self.confidence_threshold = 0.4  # Minimum confidence to override existing identity
+        self.similarity_threshold = 0.1  # Cosine similarity threshold
+        self.confidence_threshold = 0.1  # Minimum confidence to override existing identity
         self.load_known_people()
         
         # Re-identification tracking
