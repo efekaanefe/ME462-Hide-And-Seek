@@ -11,6 +11,17 @@ import json
 import cv2
 import time 
 
+import configparser
+
+def get_camera_ip(room: str, camera: str, config_path="ip_config.ini") -> str:
+    config = configparser.ConfigParser()
+    config.read(config_path)
+
+    try:
+        return config[room][camera]
+    except KeyError:
+        raise ValueError(f"No IP found for {room}.{camera}")
+
 
 def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None, 
                          room_index: int = 0, cam_index: int = 0,
@@ -53,12 +64,12 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
     out = None
     if output_path:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, 30, (1600, 1200))  # Adjust fps as needed
+        out = cv2.VideoWriter(output_path, fourcc, 30, (1920, 1080))  # Adjust fps as needed
 
     # Initialize visualization window if not headless
     if not headless:
         cv2.namedWindow("Tracking", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Tracking", 1280, 720)
+        cv2.resizeWindow("Tracking", 1920, 1080)
         
     # Initialize FPS and latency calculation
     fps_list = []
@@ -83,8 +94,10 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
         
         # Process frame (same as original)
         # frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        frame = cv2.resize(frame, (1600, 1200))
-
+        #frame = cv2.resize(frame, (1600, 1200))
+        frame = cv2.resize(frame, (1920, 1080))
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
         # Your original processing pipeline
         start = time.perf_counter()
 
@@ -131,12 +144,12 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
         total_time = sum(times.values())
         frame_count += 1
 
-        # Print results
-        print("-"*30)
-        for step, t in times.items():
-            print(f"{step}: {t:.2f} ms ({(t / total_time * 100):.2f}%)")
-        print(f"Total pipeline time: {total_time:.2f} ms")
-        print("-"*30)
+        # # Print results
+        # print("-"*30)
+        # for step, t in times.items():
+        #     print(f"{step}: {t:.2f} ms ({(t / total_time * 100):.2f}%)")
+        # print(f"Total pipeline time: {total_time:.2f} ms")
+        # print("-"*30)
 
         # Calculate FPS and latency
         frame_time = time.time() - frame_start_time
@@ -207,9 +220,12 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
     print(f"Average Latency: {latency_ms:.1f}ms")
 
 def main():
-    # Example usage - replace with your Pi's IP
+    room = "room0"
+    camera = "cam1"
+    ip = get_camera_ip(room, camera)
+
     run_tracking_with_tcp(
-        host="192.168.68.58",  # Your Raspberry Pi IP
+        host=ip,  # Your Raspberry Pi IP
         port=8080,
         output_path="output_tracking_live.mp4",  # Optional
         room_index=0,

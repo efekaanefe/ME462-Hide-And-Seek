@@ -10,8 +10,8 @@ class PersonTracker:
         """Initialize the tracker."""
         self.next_id = 1
         self.tracked_objects = {}  # {id: track_data}
-        self.disappear_threshold = 2.0  # seconds
-        self.iou_threshold = 0.3
+        self.disappear_threshold = 10.0  # seconds
+        self.iou_threshold = -0.1
         self.max_age = 30  # frames
         
     def _calculate_iou(self, bbox1: List[float], bbox2: List[float]) -> float:

@@ -13,7 +13,7 @@ class PersonDetector:
             model_path: Path to YOLOv8 model weights
         """
         self.model = YOLO(model_path)
-        self.confidence_threshold = 0.5
+        self.confidence_threshold = 0.2
         
     def update(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         """Detect people in the frame.

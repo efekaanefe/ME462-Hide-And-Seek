@@ -23,9 +23,12 @@ class TCPStreamServer:
             
             if self.camera.isOpened():
                 # Set conservative settings
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                self.camera.set(cv2.CAP_PROP_FPS, 15)
+                #self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                #self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+
+                self.camera.set(cv2.CAP_PROP_FPS, 30)
                 self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 
                 # Test capture
@@ -96,7 +99,7 @@ class TCPStreamServer:
                         print(f"Error sending to client {addr}: {e}")
                         break
                         
-                time.sleep(1/15)  # Control frame rate (15 FPS)
+                time.sleep(1/30)  # Control frame rate (15 FPS)
                 
         except Exception as e:
             print(f"Client {addr} error: {e}")
