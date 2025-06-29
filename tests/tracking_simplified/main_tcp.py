@@ -8,7 +8,8 @@ from utils.MQTTPublisher import MQTTPublisher
 from utils.TCPClient import TCPClient
 import json
 import cv2
-import time 
+import time
+import argparse 
 
 import configparser
 
@@ -175,14 +176,27 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
 
 
 def main():
+<<<<<<< HEAD
     room_index = 0
     camera_index = 0
     ip = get_camera_ip(room_index, camera_index)
+=======
+    parser = argparse.ArgumentParser(description="Run tracking for a specific room and camera.")
+    parser.add_argument("--room", type=int, default=0, help="Index of the room (default: 0)")
+    parser.add_argument("--cam", type=int, default=2, help="Index of the camera (default: 2)")
+    args = parser.parse_args()
+
+    room_index = args.room
+    camera_index = args.cam
+    room_str = f"room{room_index}"
+    camera_str = f"cam{camera_index}"
+    ip = get_camera_ip(room_str, camera_str)
+>>>>>>> 2990e1d2 (manager and other codes are tested, homography calibration is done)
 
     run_tracking_with_tcp(
-        host=ip,  # Your Raspberry Pi IP
+        host=ip,
         port=8080,
-        output_path= None, #"output_tracking_live.mp4",  # Optional
+        output_path=None,
         room_index=room_index,
         cam_index=camera_index,
         headless=False,
