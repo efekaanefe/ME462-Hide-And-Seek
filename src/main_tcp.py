@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-from utils import PersonDetector
-from utils import FaceRecognizer
-from utils import HomographyProjector
-from utils import OrientationDetector
-from utils import PersonTracker
-from utils import MQTTPublisher
-from utils import TCPClient
-
+from utils.person_detector import PersonDetector
+from utils.face_recognizer import FaceRecognizer
+from utils.homography_projector import HomographyProjector
+from utils.orientation_detector import OrientationDetector
+from utils.person_tracker import PersonTracker
+from utils.MQTTPublisher import MQTTPublisher
+from utils.TCPClient import TCPClient
 import json
 import cv2
-import time 
+import time
+import argparse 
 
 import configparser
 
@@ -38,23 +38,20 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
         show_fps: If True, display FPS and latency on video
     """
 
-    # Initialize components (same as original)
     detector = PersonDetector()
     recognizer = FaceRecognizer()
     projector = HomographyProjector()
     orientation = OrientationDetector()
     tracker = PersonTracker()
-    publisher = MQTTPublisher(broker_address="mqtt.eclipseprojects.io")
+    publisher = MQTTPublisher(broker_address="mqtt.eclipseprojects.io", room_index=room_index, camera_index=cam_index)
     publisher.connect()
     
     # Wait for MQTT connection
     time.sleep(2)
     
-    # Select room and camera
     projector.select_room(room_index)
     projector.select_camera(cam_index)
     
-    # Initialize TCP client instead of VideoCapture
     tcp_client = TCPClient(host, port)
     if not tcp_client.connect():
         print("Failed to connect to TCP server")
@@ -91,111 +88,70 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
             
         # Start timing for FPS calculation
         frame_start_time = time.time()
-        
-        # Process frame (same as original)
-        # frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        #frame = cv2.resize(frame, (1600, 1200))
+      
         frame = cv2.resize(frame, (1920, 1080))
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
         # Your original processing pipeline
         start = time.perf_counter()
 
-        # Step 1: Detector
-        t0 = time.perf_counter()
         detections = detector.update(frame)
-        t1 = time.perf_counter()
 
-        # Step 2: Tracker
         tracks = tracker.update(detections, time.time())
-        t2 = time.perf_counter()
 
-        # Step 3: Recognizer 
         print("-"*50)
         print("Before recognizer:", detections[0].keys() if detections else "No detections")
         detections = recognizer.update(frame, detections)
         print("After recognizer:", detections[0].keys() if detections else "No detections")
-        t3 = time.perf_counter()
 
-        # Step 4: Orientation
         detections = orientation.update(frame, detections)
-        t4 = time.perf_counter()
 
-        # Step 5: Projector
         detections = projector.update(detections)
-        t5 = time.perf_counter()
 
-        # Step 6: Update tracker again
+        # Update tracker again
         tracks = tracker.update(detections, time.time())
 
-        # Step 7: Clean up old recognition cache entries
+        # Clean up old recognition cache entries
         active_track_ids = list(tracks.keys())
         recognizer.cleanup_old_tracks(active_track_ids)
 
-        # Timing calculations (same as original)
-        times = {
-            "Detector": (t1 - t0) * 1000,
-            "Tracker": (t2 - t1) * 1000,
-            "Recognizer": (t3 - t2) * 1000,
-            "Orientation": (t4 - t3) * 1000,
-            "Projector": (t5 - t4) * 1000
-        }
 
-        total_time = sum(times.values())
-        frame_count += 1
-
-        # # Print results
-        # print("-"*30)
-        # for step, t in times.items():
-        #     print(f"{step}: {t:.2f} ms ({(t / total_time * 100):.2f}%)")
-        # print(f"Total pipeline time: {total_time:.2f} ms")
-        # print("-"*30)
-
-        # Calculate FPS and latency
         frame_time = time.time() - frame_start_time
         current_fps = 1.0 / frame_time if frame_time > 0 else 0
-        current_latency_ms = frame_time * 1000  # Convert to milliseconds
-        
-        # Keep rolling averages
         fps_list.append(current_fps)
-        latency_list.append(current_latency_ms)
         if len(fps_list) > 30:
             fps_list.pop(0)
-        if len(latency_list) > 30:
-            latency_list.pop(0)
-            
         fps = sum(fps_list) / len(fps_list)
-        latency_ms = sum(latency_list) / len(latency_list)
         
-        # Draw visualizations (same as original)
         vis_frame = frame.copy()
         if show_fps:
-            # Display FPS
             cv2.putText(vis_frame, f"FPS: {fps:.1f}", (1300, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            # Display latency below FPS
-            cv2.putText(vis_frame, f"Latency: {latency_ms:.1f}ms", (1300, 70),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-                       
-        # Draw tracking results
+
+
         vis_frame = tracker.visualize(vis_frame, tracks)
-        
-        # Draw map visualization using projector
         vis_frame = projector.visualize(vis_frame, list(tracks.values()))
         
-        # MQTT publishing (same as original, uncomment if needed)
-        # if publisher.is_connected:
-        #     for track_id, track in tracks.items():
-        #         if 'map_position' in track:
-        #             position_data = {
-        #                 "track_id": track_id,
-        #                 "name": track.get('name', 'Unknown'),
-        #                 "x": float(track['map_position'][0]),
-        #                 "y": float(track['map_position'][1]),
-        #                 "orientation": float(track['orientation']) if 'orientation' in track else None,
-        #                 "timestamp": time.time()
-        #             }
-        #             print(f"{track['map_position'][0]}, {track['map_position'][1]}")
+        # MQTT publishing 
+        if publisher.is_connected:
+            for track_id, track in tracks.items():
+                if 'map_position' in track:
+                    track_data = {
+                        "track_id": track_id,
+                        "name": track.get('name', 'Unknown'),
+                        "x": float(track['map_position'][0]),
+                        "y": float(track['map_position'][1]),
+                        "orientation": float(track['orientation']) if 'orientation' in track else None,
+                        "timestamp": time.time()
+                    }
+
+                    publisher.publish(
+                        f"tracking/{room_index}/{cam_index}/{track_id}", 
+                        json.dumps(track_data), 
+                        qos=1
+                    )
+
+                    print(f"{track['map_position'][0]}, {track['map_position'][1]}")
         
         # Write frame to output video (if enabled)
         if out:
@@ -217,21 +173,31 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
     
     print(f"Processed {frame_count} frames")
     print(f"Average FPS: {fps:.1f}")
-    print(f"Average Latency: {latency_ms:.1f}ms")
+
 
 def main():
-    room = "room0"
-    camera = "cam1"
-    ip = get_camera_ip(room, camera)
+    room_index = 0
+    camera_index = 0
+    ip = get_camera_ip(room_index, camera_index)
+    parser = argparse.ArgumentParser(description="Run tracking for a specific room and camera.")
+    parser.add_argument("--room", type=int, default=0, help="Index of the room (default: 0)")
+    parser.add_argument("--cam", type=int, default=2, help="Index of the camera (default: 2)")
+    args = parser.parse_args()
+
+    room_index = args.room
+    camera_index = args.cam
+    room_str = f"room{room_index}"
+    camera_str = f"cam{camera_index}"
+    ip = get_camera_ip(room_str, camera_str)
 
     run_tracking_with_tcp(
-        host=ip,  # Your Raspberry Pi IP
+        host=ip,
         port=8080,
-        output_path="output_tracking_live.mp4",  # Optional
-        room_index=0,
-        cam_index=0,
+        output_path=None,
+        room_index=room_index,
+        cam_index=camera_index,
         headless=False,
-        show_fps=True
+        show_fps=True,
     )
 
 if __name__ == "__main__":
