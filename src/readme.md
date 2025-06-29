@@ -7,5 +7,5 @@
     static domain_name_servers=8.8.8.8
 
 - [ ] try to decrease latency using things in: https://www.youtube.com/watch?v=rxtcyxV32nc&t=358s
-- [ ] add tracker manager script
-- [ ] make other rpi4s work 
+- [x] add tracker manager script
+- [x] make other rpi4s work 
