@@ -99,10 +99,7 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
 
         tracks = tracker.update(detections, time.time())
 
-        print("-"*50)
-        print("Before recognizer:", detections[0].keys() if detections else "No detections")
         detections = recognizer.update(frame, detections)
-        print("After recognizer:", detections[0].keys() if detections else "No detections")
 
         detections = orientation.update(frame, detections)
 

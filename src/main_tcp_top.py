@@ -2,9 +2,11 @@
 import cv2
 import time
 import numpy as np
+import json  # Add this import
 from utils.TCPClient import TCPClient
 from utils.homography_projector import HomographyProjector
 from utils.orientation_detector import OrientationDetector
+from utils.MQTTPublisher import MQTTPublisher
 import configparser
 
 # Optional: Map ArUco IDs to names
@@ -14,7 +16,7 @@ ARUCO_ID_NAMES = {
     2: "Robot 1",
     3: "Target Zone",
     4: "Charging Station",
-    7: "bomba"
+    7: "NAO"
     # Add more mappings as needed
 }
 
@@ -39,6 +41,9 @@ def run_aruco_tracking(host: str, port: int = 8080, room_index: int = 0, cam_ind
     projector = HomographyProjector()
     projector.select_room(room_index)
     projector.select_camera(cam_index)
+
+    publisher = MQTTPublisher(broker_address="mqtt.eclipseprojects.io", room_index=room_index, camera_index=cam_index)
+    publisher.connect()
 
     # ArUco dictionary and detector setup
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
@@ -87,7 +92,6 @@ def run_aruco_tracking(host: str, port: int = 8080, room_index: int = 0, cam_ind
                     "orientation": orientation_angle
                 })
 
-
             # Map projection
             detections = projector.update(detections)
 
@@ -116,6 +120,26 @@ def run_aruco_tracking(host: str, port: int = 8080, room_index: int = 0, cam_ind
 
             # Overlay 2D map in corner
             frame = projector.visualize(frame, detections)
+            print("asdgasdgasdg")
+
+            # MQTT publishing for each detection
+            if publisher.is_connected:
+                for det in detections:
+                    cx, cy = det["position"]
+                    detection_data = {
+                        "track_id":det["id"],
+                        "name": det["name"],
+                        "x": float(det["map_position"][0]),
+                        "y": float(det["map_position"][1]),
+                        "orientation": float(det["orientation"]),
+                        "timestamp": time.time()
+                    }
+
+                    # Publish with marker ID as part of the topic
+                    topic = f"tracking/{room_index}/{cam_index}/{detection_data['track_id']}"
+                    publisher.publish(topic, json.dumps(detection_data), qos=1)
+                    
+                    print(f"Published: {det['name']} at ({cx}, {cy}) with orientation {np.degrees(det['orientation']):.1f}°")
 
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         cv2.imshow("Aruco Tracking", frame)
@@ -127,18 +151,16 @@ def run_aruco_tracking(host: str, port: int = 8080, room_index: int = 0, cam_ind
     print("Tracking ended.")
 
 
-
-
 def main():
     room = "room0"
-    camera = "cam0"
+    camera = "cam2"
     ip = get_camera_ip(room, camera)
 
     run_aruco_tracking(
         host=ip,
         port=8080,
         room_index=0,
-        cam_index=0
+        cam_index=2
     )
 
 
