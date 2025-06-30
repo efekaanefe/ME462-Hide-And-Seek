@@ -419,19 +419,21 @@ class TrackMapper:
         """Update the map visualization with current average positions"""
         if self.ax is None:
             return
-            
+        
         # Clear previous plot
         self.ax.clear()
         
-        # Draw map background
+        # Set constant limits first
+        self.ax.set_xlim(self.coordinate_bounds['x_min'], self.coordinate_bounds['x_max'])
+        self.ax.set_ylim(self.coordinate_bounds['y_min'], self.coordinate_bounds['y_max'])
+        
+        # Draw map background if available
         if self.map_image is not None:
             self.ax.imshow(self.map_image, extent=[
                 self.coordinate_bounds['x_min'], self.coordinate_bounds['x_max'],
                 self.coordinate_bounds['y_min'], self.coordinate_bounds['y_max']
             ])
         else:
-            self.ax.set_xlim(self.coordinate_bounds['x_min'], self.coordinate_bounds['x_max'])
-            self.ax.set_ylim(self.coordinate_bounds['y_min'], self.coordinate_bounds['y_max'])
             self.ax.grid(True)
         
         # Plot average positions
@@ -440,20 +442,26 @@ class TrackMapper:
         
         for i, (name, pos_data) in enumerate(averages.items()):
             x, y = pos_data['x'], pos_data['y']
+
+            y = 1000 - y
+
+
+            
             count = pos_data['count']
             time_span = pos_data['time_span']
             
             # Plot the average position
             color = colors[i % len(colors)]
             self.ax.scatter(x, y, c=[color], s=150, alpha=0.8, 
-                          edgecolors='black', linewidth=2)
+                            edgecolors='black', linewidth=2)
             
             # Add name label with count and time info
-            self.ax.annotate(f'{name} (n={count}, {time_span:.1f}s)', (x, y), 
-                           xytext=(10, 10), textcoords='offset points', 
-                           fontsize=12, fontweight='bold',
-                           bbox=dict(boxstyle='round,pad=0.5', 
-                                   facecolor='white', alpha=0.8))
+            self.ax.annotate(f'{name} (n={count}, {time_span:.1f}s)', 
+                            (x, y), xytext=(10, 10),
+                            textcoords='offset points', fontsize=12, 
+                            fontweight='bold',
+                            bbox=dict(boxstyle='round,pad=0.5', 
+                                    facecolor='white', alpha=0.8))
         
         self.ax.set_xlabel('X Coordinate')
         self.ax.set_ylabel('Y Coordinate')
@@ -507,7 +515,7 @@ def enhanced_on_track_lost(track_data, mapper):
 # Usage example in main:
 if __name__ == "__main__":
     # Initialize the track mapper with 30-second time window
-    MAP_IMAGE_PATH = "room_database//2Dmap.png"
+    MAP_IMAGE_PATH = "rooms_database/room0/2Dmap.png"
     COORDINATE_BOUNDS = {
         'x_min': 0, 'x_max': 1000,
         'y_min': 0, 'y_max': 1000
