@@ -332,13 +332,14 @@ def on_track_lost(source_name: str, track_id: str, track_data: dict):
     print(f"LOST TRACK: {source_name} (Room {room}, Camera {camera}) lost '{name}' [{track_id}] (last seen at {track_data['x']:.2f}, {track_data['y']:.2f})")
 
 class TrackMapper:
-    def __init__(self, map_image_path, coordinate_bounds=None):
+    def __init__(self, map_image_path, coordinate_bounds=None, time_window_seconds=30):
         """
         Initialize the track mapper
         
         Args:
             map_image_path: Path to the map image
             coordinate_bounds: Dict with keys 'x_min', 'x_max', 'y_min', 'y_max' 
+            time_window_seconds: How many seconds of data to keep for averaging
         """
         self.map_image_path = map_image_path
         self.map_image = None
@@ -346,7 +347,9 @@ class TrackMapper:
             'x_min': 0, 'x_max': 100, 
             'y_min': 0, 'y_max': 100
         }
-        # Store all positions for each name: name -> list of (x, y)
+        self.time_window_seconds = time_window_seconds
+        
+        # Store all positions for each name with timestamps: name -> list of (x, y, timestamp)
         self.track_positions = defaultdict(list)
         self.fig = None
         self.ax = None
@@ -364,22 +367,51 @@ class TrackMapper:
             self.fig, self.ax = plt.subplots(figsize=(12, 8))
             plt.ion()
     
+    def cleanup_old_tracks(self):
+        """Remove position data older than time_window_seconds"""
+        current_time = time.time()
+        cutoff_time = current_time - self.time_window_seconds
+        
+        for name in list(self.track_positions.keys()):
+            # Filter out old positions
+            self.track_positions[name] = [
+                (x, y, timestamp) for x, y, timestamp in self.track_positions[name]
+                if timestamp >= cutoff_time
+            ]
+            
+            # Remove tracks with no recent positions
+            if not self.track_positions[name]:
+                del self.track_positions[name]
+    
     def update_track_position(self, name, x, y, timestamp=None):
-        """Add a new position for a named track (timestamp ignored for simplicity)"""
-        self.track_positions[name].append((x, y))
-        print(f"Added position for {name}: ({x:.2f}, {y:.2f}) - Total positions: {len(self.track_positions[name])}")
+        """Add a new position for a named track"""
+        if timestamp is None:
+            timestamp = time.time()
+            
+        self.track_positions[name].append((x, y, timestamp))
+        
+        # Clean up old data
+        self.cleanup_old_tracks()
+        
+        print(f"Added position for {name}: ({x:.2f}, {y:.2f}) - Recent positions: {len(self.track_positions[name])}")
     
     def get_average_positions(self):
-        """Calculate average positions for each named track"""
+        """Calculate average positions for each named track (last n seconds only)"""
+        # Clean up old data first
+        self.cleanup_old_tracks()
+        
         averages = {}
         for name, positions in self.track_positions.items():
             if positions:
                 x_coords = [pos[0] for pos in positions]
                 y_coords = [pos[1] for pos in positions]
+                timestamps = [pos[2] for pos in positions]
+                
                 averages[name] = {
                     'x': np.mean(x_coords),
                     'y': np.mean(y_coords),
-                    'count': len(positions)
+                    'count': len(positions),
+                    'time_span': max(timestamps) - min(timestamps) if len(timestamps) > 1 else 0
                 }
         return averages
     
@@ -409,14 +441,15 @@ class TrackMapper:
         for i, (name, pos_data) in enumerate(averages.items()):
             x, y = pos_data['x'], pos_data['y']
             count = pos_data['count']
+            time_span = pos_data['time_span']
             
             # Plot the average position
             color = colors[i % len(colors)]
             self.ax.scatter(x, y, c=[color], s=150, alpha=0.8, 
                           edgecolors='black', linewidth=2)
             
-            # Add name label with count
-            self.ax.annotate(f'{name} (n={count})', (x, y), 
+            # Add name label with count and time info
+            self.ax.annotate(f'{name} (n={count}, {time_span:.1f}s)', (x, y), 
                            xytext=(10, 10), textcoords='offset points', 
                            fontsize=12, fontweight='bold',
                            bbox=dict(boxstyle='round,pad=0.5', 
@@ -424,7 +457,7 @@ class TrackMapper:
         
         self.ax.set_xlabel('X Coordinate')
         self.ax.set_ylabel('Y Coordinate')
-        self.ax.set_title(f'Average Track Positions ({len(averages)} unique names)')
+        self.ax.set_title(f'Average Track Positions - Last {self.time_window_seconds}s ({len(averages)} active tracks)')
         
         plt.tight_layout()
         plt.draw()
@@ -432,10 +465,11 @@ class TrackMapper:
     
     def print_summary(self):
         """Print summary of all tracked positions"""
-        print(f"\n--- TRACK POSITION SUMMARY ---")
+        print(f"\n--- TRACK POSITION SUMMARY (Last {self.time_window_seconds}s) ---")
         averages = self.get_average_positions()
         for name, pos_data in averages.items():
-            print(f"{name}: Average position ({pos_data['x']:.2f}, {pos_data['y']:.2f}) from {pos_data['count']} observations")
+            print(f"{name}: Average position ({pos_data['x']:.2f}, {pos_data['y']:.2f}) "
+                  f"from {pos_data['count']} observations over {pos_data['time_span']:.1f}s")
 
 
 # Modified callback functions that work with the original integration
@@ -444,9 +478,10 @@ def enhanced_on_track_update(track_data, mapper):
     name = track_data.get('name', 'Unknown')
     x = track_data.get('x', 0)
     y = track_data.get('y', 0)
+    timestamp = track_data.get('timestamp', time.time())
     
-    # Update mapper with new position
-    mapper.update_track_position(name, x, y)
+    # Update mapper with new position including timestamp
+    mapper.update_track_position(name, x, y, timestamp)
     
     # Original callback behavior
     print(f"Track updated: {name} at ({x:.2f}, {y:.2f})")
@@ -456,9 +491,10 @@ def enhanced_on_new_track(track_data, mapper):
     name = track_data.get('name', 'Unknown')
     x = track_data.get('x', 0)
     y = track_data.get('y', 0)
+    timestamp = track_data.get('timestamp', time.time())
     
     # Update mapper
-    mapper.update_track_position(name, x, y)
+    mapper.update_track_position(name, x, y, timestamp)
     
     # Original callback behavior  
     print(f"New track: {name} [{track_data.get('track_id', '?')}]")
@@ -470,15 +506,16 @@ def enhanced_on_track_lost(track_data, mapper):
 
 # Usage example in main:
 if __name__ == "__main__":
-    # Initialize the track mapper
+    # Initialize the track mapper with 30-second time window
     MAP_IMAGE_PATH = "room_database//2Dmap.png"
     COORDINATE_BOUNDS = {
         'x_min': 0, 'x_max': 1000,
         'y_min': 0, 'y_max': 1000
     }
+    TIME_WINDOW_SECONDS = 2  # Only keep last 30 seconds of data
     
     # Create the mapper
-    mapper = TrackMapper(MAP_IMAGE_PATH, COORDINATE_BOUNDS)
+    mapper = TrackMapper(MAP_IMAGE_PATH, COORDINATE_BOUNDS, TIME_WINDOW_SECONDS)
     
     # Create MQTT manager
     manager = MQTTMultiSourceManager(broker_address="mqtt.eclipseprojects.io")
@@ -499,7 +536,7 @@ if __name__ == "__main__":
             if manager.is_connected:
                 iteration += 1
                 
-                # Update visualization every 5 iterations
+                # Update visualization every iteration
                 if iteration % 1 == 0:
                     mapper.update_visualization()
                     mapper.print_summary()
