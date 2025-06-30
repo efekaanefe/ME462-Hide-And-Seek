@@ -136,24 +136,22 @@ class TCPStreamServer:
                     try:
                         frame = frame[:, :expected_gray_pixels]
                         frame = frame.reshape((self.actual_height, self.actual_width))
-                        # frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
                     except ValueError:
                         return None
                 else:
                     return None
             else:
-                print()
                 # Grayscale to BGR
-                # frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
         elif len(frame.shape) == 3:
             if frame.shape[2] == 4:
                 # RGBA to BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
             elif frame.shape[2] == 1:
-                print()
                 # Single channel to BGR
-                # frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             # If frame.shape[2] == 3, assume it's already BGR from OpenCV camera
         else:
             return None
@@ -167,8 +165,6 @@ class TCPStreamServer:
         # Convert BGR to RGB for consistent output regardless of resolution
         if frame is not None and len(frame.shape) == 3 and frame.shape[2] == 3:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         return frame
 
