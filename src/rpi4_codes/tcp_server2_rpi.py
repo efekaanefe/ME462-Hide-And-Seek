@@ -151,6 +151,7 @@ class TCPStreamServer:
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
             elif frame.shape[2] == 1:
                 # Single channel to BGR
+                print("HEREE")
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             # If frame.shape[2] == 3, assume it's already BGR from OpenCV camera
         else:
