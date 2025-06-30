@@ -148,9 +148,8 @@ class TCPStreamServer:
 
         elif len(frame.shape) == 3:
             if frame.shape[2] == 4:
-                print()
                 # RGBA to BGR
-                # frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
             elif frame.shape[2] == 1:
                 print()
                 # Single channel to BGR
