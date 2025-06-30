@@ -118,6 +118,7 @@ class TCPStreamServer:
         if frame is None:
             return None
 
+        # Handle different frame formats and ensure consistent BGR format first
         if len(frame.shape) == 2:
             if frame.shape[0] == 1:
                 total_pixels = frame.shape[1]
@@ -128,6 +129,7 @@ class TCPStreamServer:
                     try:
                         frame = frame[:, :expected_bgr_pixels]
                         frame = frame.reshape((self.actual_height, self.actual_width, 3))
+                        # Assume this is already in BGR format from camera
                     except ValueError:
                         return None
                 elif total_pixels >= expected_gray_pixels:
@@ -140,22 +142,28 @@ class TCPStreamServer:
                 else:
                     return None
             else:
+                # Grayscale to BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
         elif len(frame.shape) == 3:
             if frame.shape[2] == 4:
+                # RGBA to BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
             elif frame.shape[2] == 1:
+                # Single channel to BGR
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            # If frame.shape[2] == 3, assume it's already BGR from OpenCV camera
         else:
             return None
 
+        # Resize if needed
         if (frame.shape[1], frame.shape[0]) != (self.target_width, self.target_height):
             if self.target_width != self.actual_width or self.target_height != self.actual_height:
                 print(f"Resized from {self.actual_width}x{self.actual_height} to {self.target_width}x{self.target_height}")
                 frame = cv2.resize(frame, (self.target_width, self.target_height))
 
-        if frame is not None and frame.shape[2] == 3:
+        # Convert BGR to RGB for consistent output regardless of resolution
+        if frame is not None and len(frame.shape) == 3 and frame.shape[2] == 3:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         return frame
