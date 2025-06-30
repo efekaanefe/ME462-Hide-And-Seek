@@ -22,8 +22,8 @@ class FaceRecognizer:
         # Load known people database
         self.known_people_dir = known_people_dir
         self.known_people = {}  # {name: {'features': [feature_vectors], 'images': [image_paths]}}
-        self.similarity_threshold = 0.1  # Cosine similarity threshold
-        self.confidence_threshold = 0.1  # Minimum confidence to override existing identity
+        self.similarity_threshold = 0.3  # Cosine similarity threshold
+        self.confidence_threshold = 0.3  # Minimum confidence to override existing identity
         self.load_known_people()
         
         # Re-identification tracking

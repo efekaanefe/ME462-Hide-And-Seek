@@ -423,8 +423,8 @@ class TrackMapper:
         self.map_image_path = map_image_path
         self.map_image = None
         self.coordinate_bounds = coordinate_bounds or {
-            'x_min': 0, 'x_max': 100, 
-            'y_min': 0, 'y_max': 100
+            'x_min': 0, 'x_max': 1000, 
+            'y_min': 0, 'y_max': 1000
         }
         self.track_positions = defaultdict(list)  # name -> list of (x, y, timestamp)
         self.fig = None

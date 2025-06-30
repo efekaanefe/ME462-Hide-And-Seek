@@ -176,12 +176,9 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
 
 
 def main():
-    room_index = 0
-    camera_index = 0
-    ip = get_camera_ip(room_index, camera_index)
     parser = argparse.ArgumentParser(description="Run tracking for a specific room and camera.")
     parser.add_argument("--room", type=int, default=0, help="Index of the room (default: 0)")
-    parser.add_argument("--cam", type=int, default=2, help="Index of the camera (default: 2)")
+    parser.add_argument("--cam", type=int, default=0, help="Index of the camera (default: 0)")
     args = parser.parse_args()
 
     room_index = args.room
