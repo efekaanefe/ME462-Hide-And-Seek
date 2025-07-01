@@ -95,6 +95,8 @@ def run_aruco_tracking(host: str, port: int = 8080, room_index: int = 0, cam_ind
             # Map projection
             detections = projector.update(detections)
 
+            print(detections)
+
             # Draw detected markers
             cv2.aruco.drawDetectedMarkers(frame, corners, ids)
 
@@ -131,7 +133,7 @@ def run_aruco_tracking(host: str, port: int = 8080, room_index: int = 0, cam_ind
                         "name": det["name"],
                         "x": float(det["map_position"][0]),
                         "y": float(det["map_position"][1]),
-                        "orientation": float(det["orientation"]),
+                        "orientation": float(det["map_orientation"]),
                         "timestamp": time.time()
                     }
 

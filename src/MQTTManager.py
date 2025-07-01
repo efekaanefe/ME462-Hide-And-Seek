@@ -375,48 +375,54 @@ class TrackMapper:
         for name in list(self.track_positions.keys()):
             # Filter out old positions
             self.track_positions[name] = [
-                (x, y, timestamp) for x, y, timestamp in self.track_positions[name]
-                if timestamp >= cutoff_time
+                pos for pos in self.track_positions[name]
+                if pos[2] >= cutoff_time  # timestamp is at index 2
             ]
             
             # Remove tracks with no recent positions
             if not self.track_positions[name]:
                 del self.track_positions[name]
-    
-    def update_track_position(self, name, x, y, timestamp=None):
-        """Add a new position for a named track"""
+
+    def update_track_position(self, name, x, y, timestamp=None, orientation=None):
+        """Add a new position for a named track with optional orientation"""
         if timestamp is None:
             timestamp = time.time()
-            
-        self.track_positions[name].append((x, y, timestamp))
+        
+        # Store as (x, y, timestamp, orientation) - orientation can be None
+        self.track_positions[name].append((x, y, timestamp, orientation))
         
         # Clean up old data
-        self.cleanup_old_tracks()
-        
-        print(f"Added position for {name}: ({x:.2f}, {y:.2f}) - Recent positions: {len(self.track_positions[name])}")
-    
+        self.cleanup_old_tracks()    
+
+
     def get_average_positions(self):
-        """Calculate average positions for each named track (last n seconds only)"""
+        """Calculate average positions and orientations for each named track (last n seconds only)"""
         # Clean up old data first
         self.cleanup_old_tracks()
-        
         averages = {}
         for name, positions in self.track_positions.items():
             if positions:
                 x_coords = [pos[0] for pos in positions]
                 y_coords = [pos[1] for pos in positions]
                 timestamps = [pos[2] for pos in positions]
+                orientations = [pos[3] for pos in positions if len(pos) > 3 and pos[3] is not None]  # Get orientations if available
                 
-                averages[name] = {
+                avg_data = {
                     'x': np.mean(x_coords),
                     'y': np.mean(y_coords),
                     'count': len(positions),
                     'time_span': max(timestamps) - min(timestamps) if len(timestamps) > 1 else 0
                 }
+                
+                # Add average orientation if available
+                if orientations:
+                    avg_data['orientation'] = np.mean(orientations)
+                
+                averages[name] = avg_data
         return averages
-    
+
     def update_visualization(self):
-        """Update the map visualization with current average positions"""
+        """Update the map visualization with current average positions and orientations"""
         if self.ax is None:
             return
         
@@ -442,35 +448,42 @@ class TrackMapper:
         
         for i, (name, pos_data) in enumerate(averages.items()):
             x, y = pos_data['x'], pos_data['y']
-
             y = 1000 - y
-
-
-            
             count = pos_data['count']
             time_span = pos_data['time_span']
             
             # Plot the average position
             color = colors[i % len(colors)]
-            self.ax.scatter(x, y, c=[color], s=150, alpha=0.8, 
-                            edgecolors='black', linewidth=2)
+            self.ax.scatter(x, y, c=[color], s=150, alpha=0.8,
+                        edgecolors='black', linewidth=2)
+            
+            # Plot orientation arrow if available
+            if 'orientation' in pos_data:
+                orientation = pos_data['orientation']
+                # Arrow length proportional to plot size
+                arrow_length = min(self.coordinate_bounds['x_max'] - self.coordinate_bounds['x_min'],
+                                self.coordinate_bounds['y_max'] - self.coordinate_bounds['y_min']) * 0.05
+                dx = arrow_length * np.cos(orientation)
+                dy = -arrow_length * np.sin(orientation)
+                
+                self.ax.arrow(x, y, dx, dy, head_width=arrow_length*0.3, 
+                            head_length=arrow_length*0.2, fc=color, ec=color, alpha=0.8)
             
             # Add name label with count and time info
-            self.ax.annotate(f'{name} (n={count}, {time_span:.1f}s)', 
+            self.ax.annotate(f'{name} (n={count}, {time_span:.1f}s)',
                             (x, y), xytext=(10, 10),
-                            textcoords='offset points', fontsize=12, 
+                            textcoords='offset points', fontsize=12,
                             fontweight='bold',
-                            bbox=dict(boxstyle='round,pad=0.5', 
+                            bbox=dict(boxstyle='round,pad=0.5',
                                     facecolor='white', alpha=0.8))
         
         self.ax.set_xlabel('X Coordinate')
         self.ax.set_ylabel('Y Coordinate')
         self.ax.set_title(f'Average Track Positions - Last {self.time_window_seconds}s ({len(averages)} active tracks)')
-        
         plt.tight_layout()
         plt.draw()
         plt.pause(0.01)
-    
+
     def print_summary(self):
         """Print summary of all tracked positions"""
         print(f"\n--- TRACK POSITION SUMMARY (Last {self.time_window_seconds}s) ---")
@@ -480,37 +493,46 @@ class TrackMapper:
                   f"from {pos_data['count']} observations over {pos_data['time_span']:.1f}s")
 
 
-# Modified callback functions that work with the original integration
+# Modified callback functions that work with orientation data
 def enhanced_on_track_update(track_data, mapper):
-    """Enhanced callback that updates the mapper"""
+    """Enhanced callback that updates the mapper with orientation"""
     name = track_data.get('name', 'Unknown')
     x = track_data.get('x', 0)
     y = track_data.get('y', 0)
     timestamp = track_data.get('timestamp', time.time())
+    orientation = track_data.get('orientation')  # This can be None
     
-    # Update mapper with new position including timestamp
-    mapper.update_track_position(name, x, y, timestamp)
+    # Update mapper with new position including orientation
+    mapper.update_track_position(name, x, y, timestamp, orientation)
     
     # Original callback behavior
-    print(f"Track updated: {name} at ({x:.2f}, {y:.2f})")
+    if orientation is not None:
+        print(f"Track updated: {name} at ({x:.2f}, {y:.2f}) facing {orientation:.1f}°")
+    else:
+        print(f"Track updated: {name} at ({x:.2f}, {y:.2f})")
 
 def enhanced_on_new_track(track_data, mapper):
-    """Enhanced callback for new tracks"""
+    """Enhanced callback for new tracks with orientation"""
     name = track_data.get('name', 'Unknown')
     x = track_data.get('x', 0)
     y = track_data.get('y', 0)
     timestamp = track_data.get('timestamp', time.time())
+    orientation = track_data.get('orientation')
     
     # Update mapper
-    mapper.update_track_position(name, x, y, timestamp)
+    mapper.update_track_position(name, x, y, timestamp, orientation)
     
     # Original callback behavior  
-    print(f"New track: {name} [{track_data.get('track_id', '?')}]")
+    if orientation is not None:
+        print(f"New track: {name} [{track_data.get('track_id', '?')}] at ({x:.2f}, {y:.2f}) facing {orientation:.1f}°")
+    else:
+        print(f"New track: {name} [{track_data.get('track_id', '?')}] at ({x:.2f}, {y:.2f})")
 
 def enhanced_on_track_lost(track_data, mapper):
     """Enhanced callback for lost tracks"""
     name = track_data.get('name', 'Unknown')
     print(f"Track lost: {name} [{track_data.get('track_id', '?')}]")
+
 
 # Usage example in main:
 if __name__ == "__main__":
