@@ -11,13 +11,8 @@ import configparser
 
 # Optional: Map ArUco IDs to names
 ARUCO_ID_NAMES = {
-    0: "Box A",
-    1: "Box B",
-    2: "Robot 1",
-    3: "Target Zone",
-    4: "Charging Station",
-    7: "NAO"
-    # Add more mappings as needed
+    7: "NAO",
+    79:"Target"
 }
 
 

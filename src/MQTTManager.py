@@ -12,6 +12,16 @@ import matplotlib.image as mpimg
 from collections import defaultdict
 from matplotlib.patches import Circle
 
+try:
+    import socket
+    PORT = 9999
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect(("192.168.68.66", PORT))
+except Exception:
+    print("Cant connect to NAO")
+
+
+
 class MQTTMultiSourceManager:
     def __init__(self, broker_address: str, port: int = 1883, client_id_prefix: str = "multi_manager"):
         self.broker_address = broker_address
@@ -491,8 +501,85 @@ class TrackMapper:
         for name, pos_data in averages.items():
             print(f"{name}: Average position ({pos_data['x']:.2f}, {pos_data['y']:.2f}) "
                   f"from {pos_data['count']} observations over {pos_data['time_span']:.1f}s")
+            
 
+    def handle_nao_angle(self, target="Target"):
+        x_target = 0
+        y_target = 0
+        x_nao = 0
+        y_nao = 0
+        orientation_nao = 0
+        
+        # Flags to track if objects are found
+        nao_found = False
+        target_found = False
+        
+        def angle_diff(a, b):
+            """Calculate smallest difference between two angles in degrees."""
+            d = a - b
+            return ((d + 180) % 360) - 180
+        
+        averages = self.get_average_positions()
+        
+        for i, (name, pos_data) in enumerate(averages.items()):
+            x, y = pos_data['x'], pos_data['y']
+            orientation = pos_data['orientation']
+            
+            if name == "NAO":
+                x_nao = x
+                y_nao = y
+                orientation_nao = np.degrees(orientation)
+                nao_found = True
+                print("NAO found")
+                
+            if name == target:  # Use the parameter instead of hardcoded "Target"
+                x_target = x
+                y_target = y
+                target_found = True
+                print("Target Found")
+        
+        # Check if both objects were found before calculating
+        if not nao_found:
+            print("Error: NAO not found")
+            return None
+            
+        if not target_found:
+            print(f"Error: {target} not found")
+            return None
+        
+        # Calculate angle only if both objects exist
+        dx = x_target - x_nao
+        dy = y_target - y_nao
+        angle_to_target = np.degrees(np.atan2(dy, dx))
+        
+        # Compute the relative angle (angle difference)
+        relative_angle = angle_diff(angle_to_target, orientation_nao)
+        print(f"Angle to target: {angle_to_target}")
+        print(f"Relative angle: {relative_angle}")
+        
+        return relative_angle
 
+    def send_to_nao(self, angle_deg):
+        # Check if angle is valid before sending
+        if angle_deg is None:
+            print("Cannot send invalid angle to NAO")
+            return False
+            
+        # Try to send data over socket
+        try:
+            message = f"({angle_deg:.2f},{angle_deg:.2f})\n"
+            # Uncomment to send over socket
+            # sock.sendall(message.encode())
+            print(f"Sending to NAO: {message.strip()}")
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            print("Connection closed.")
+            return False
+        except Exception as e:
+            print(f"Error sending to NAO: {e}")
+            return False
+        
+        
 # Modified callback functions that work with orientation data
 def enhanced_on_track_update(track_data, mapper):
     """Enhanced callback that updates the mapper with orientation"""
@@ -507,7 +594,7 @@ def enhanced_on_track_update(track_data, mapper):
     
     # Original callback behavior
     if orientation is not None:
-        print(f"Track updated: {name} at ({x:.2f}, {y:.2f}) facing {orientation:.1f}°")
+        print(f"Track updated: {name} at ({x:.2f}, {y:.2f}) facing {np.degrees(orientation):.1f}°")
     else:
         print(f"Track updated: {name} at ({x:.2f}, {y:.2f})")
 
@@ -569,7 +656,9 @@ if __name__ == "__main__":
                 # Update visualization every iteration
                 if iteration % 1 == 0:
                     mapper.update_visualization()
-                    mapper.print_summary()
+                    #mapper.print_summary()
+                    mapper.handle_nao_angle()
+                
                 
                 time.sleep(0.1)
                 
