@@ -16,7 +16,7 @@ try:
     import socket
     PORT = 9999
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect(("192.168.68.66", PORT))
+    sock.connect(("192.168.68.73", PORT))
 except Exception:
     print("Cant connect to NAO")
 
@@ -556,8 +556,9 @@ class TrackMapper:
         relative_angle = angle_diff(angle_to_target, orientation_nao)
         print(f"Angle to target: {angle_to_target}")
         print(f"Relative angle: {relative_angle}")
+
+        self.send_to_nao(np.radians(relative_angle))
         
-        return relative_angle
 
     def send_to_nao(self, angle_deg):
         # Check if angle is valid before sending
@@ -569,7 +570,7 @@ class TrackMapper:
         try:
             message = f"({angle_deg:.2f},{angle_deg:.2f})\n"
             # Uncomment to send over socket
-            # sock.sendall(message.encode())
+            sock.sendall(message.encode())
             print(f"Sending to NAO: {message.strip()}")
             return True
         except (BrokenPipeError, ConnectionResetError):
@@ -652,10 +653,10 @@ if __name__ == "__main__":
         while True:
             if manager.is_connected:
                 iteration += 1
+                mapper.update_visualization()
                 
                 # Update visualization every iteration
-                if iteration % 1 == 0:
-                    mapper.update_visualization()
+                if iteration % 5 == 0:
                     #mapper.print_summary()
                     mapper.handle_nao_angle()
                 
