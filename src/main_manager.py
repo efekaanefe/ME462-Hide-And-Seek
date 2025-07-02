@@ -1,16 +1,7 @@
 import time
 import matplotlib.pyplot as plt
-from utils import MQTTMultiSourceManager, camera_handler, on_new_track, on_track_lost, on_track_update
+from utils import MQTTMultiSourceManager, camera_handler
 from utils import TrackMapper, enhanced_on_new_track, enhanced_on_track_lost, enhanced_on_track_update
-
-
-try:
-    import socket
-    PORT = 9999
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect(("192.168.68.73", PORT))
-except Exception:
-    print("Cant connect to NAO")
 
 
 

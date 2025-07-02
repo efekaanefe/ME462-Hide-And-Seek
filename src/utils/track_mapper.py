@@ -4,6 +4,17 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from collections import defaultdict
 
+
+
+try:
+    import socket
+    PORT = 9999
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect(("192.168.68.73", PORT))
+except Exception:
+    print("Cant connect to NAO")
+
+
 class TrackMapper:
     def __init__(self, map_image_path, coordinate_bounds=None, time_window_seconds=30):
         """
@@ -223,6 +234,7 @@ class TrackMapper:
         self.send_to_nao(np.radians(relative_angle))
         
 
+
     def send_to_nao(self, angle_deg):
         # Check if angle is valid before sending
         if angle_deg is None:
@@ -242,6 +254,7 @@ class TrackMapper:
         except Exception as e:
             print(f"Error sending to NAO: {e}")
             return False
+
         
         
 # Modified callback functions that work with orientation data

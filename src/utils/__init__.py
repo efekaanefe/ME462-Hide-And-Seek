@@ -5,6 +5,6 @@ from .orientation_detector import OrientationDetector
 from .person_tracker import PersonTracker
 from .MQTTPublisher import MQTTPublisher
 from .TCPClient import TCPClient
-from .mqtt_multi_source_manager import MQTTMultiSourceManager, camera_handler, on_new_track, on_track_lost, on_track_update
+from .mqtt_multi_source_manager import MQTTMultiSourceManager, camera_handler
 from .track_mapper import TrackMapper, enhanced_on_new_track, enhanced_on_track_lost, enhanced_on_track_update
 from .frame_buffer import FrameBuffer, frame_reader_thread

@@ -305,24 +305,3 @@ def camera_handler(source_name: str, track_id: str, data: dict, previous_data: d
     name = data.get('name', 'Unknown')
     print(f"{source_name.upper()} (Room {room}, Cam {camera}): Track {track_id} ({name}) at ({data['x']:.2f}, {data['y']:.2f})")
 
-
-# Enhanced callback functions
-def on_new_track(source_name: str, track_id: str, track_data: dict):
-    room = track_data.get('room_index', 'Unknown')
-    camera = track_data.get('camera_index', 'Unknown')
-    name = track_data.get('name', 'Unknown')
-    print(f"NEW TRACK: {source_name} (Room {room}, Camera {camera}) detected '{name}' [{track_id}] at ({track_data['x']:.2f}, {track_data['y']:.2f})")
-
-def on_track_update(source_name: str, track_id: str, track_data: dict, previous_data: dict):
-    dx = track_data['x'] - previous_data.get('x', 0)
-    dy = track_data['y'] - previous_data.get('y', 0)
-    if abs(dx) > 0.1 or abs(dy) > 0.1:  # Only log significant movements
-        room = track_data.get('room_index', 'Unknown')
-        camera = track_data.get('camera_index', 'Unknown')
-        print(f"MOVEMENT: {source_name} (Room {room}, Camera {camera}) track {track_id} moved by ({dx:.2f}, {dy:.2f})")
-
-def on_track_lost(source_name: str, track_id: str, track_data: dict):
-    room = track_data.get('room_index', 'Unknown')
-    camera = track_data.get('camera_index', 'Unknown')
-    name = track_data.get('name', 'Unknown')
-    print(f"LOST TRACK: {source_name} (Room {room}, Camera {camera}) lost '{name}' [{track_id}] (last seen at {track_data['x']:.2f}, {track_data['y']:.2f})")
