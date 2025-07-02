@@ -28,6 +28,8 @@ if __name__ == "__main__":
     )
     
     manager.connect()
+
+    target_str = "Target"
     
     try:
         iteration = 0
@@ -39,7 +41,7 @@ if __name__ == "__main__":
                 # Update visualization every iteration
                 if iteration % 1 == 0:
                     #mapper.print_summary()
-                    mapper.handle_nao_angle()
+                    mapper.handle_nao_angle(target=target_str)
                 
                 
                 time.sleep(0.1)
