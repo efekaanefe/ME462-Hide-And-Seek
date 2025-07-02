@@ -37,7 +37,7 @@ if __name__ == "__main__":
                 mapper.update_visualization()
                 
                 # Update visualization every iteration
-                if iteration % 5 == 0:
+                if iteration % 1 == 0:
                     #mapper.print_summary()
                     mapper.handle_nao_angle()
                 
