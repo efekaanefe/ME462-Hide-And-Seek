@@ -3,10 +3,10 @@ import cv2
 import time
 import numpy as np
 import json  # Add this import
-from utils.TCPClient import TCPClient
+from utils.tcp_client import TCPClient
 from utils.homography_projector import HomographyProjector
 from utils.orientation_detector import OrientationDetector
-from utils.MQTTPublisher import MQTTPublisher
+from utils.mqtt_publisher import MQTTPublisher
 import configparser
 
 # Optional: Map ArUco IDs to names

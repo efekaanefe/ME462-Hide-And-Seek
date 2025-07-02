@@ -176,62 +176,50 @@ class TrackMapper:
             print(f"{name}: Average position ({pos_data['x']:.2f}, {pos_data['y']:.2f}) "
                   f"from {pos_data['count']} observations over {pos_data['time_span']:.1f}s")
             
-
     def handle_nao_angle(self, target="Target"):
-        x_target = 0
-        y_target = 0
-        x_nao = 0
-        y_nao = 0
-        orientation_nao = 0
-        
-        # Flags to track if objects are found
-        nao_found = False
-        target_found = False
-        
+        """Compute relative angle from NAO to target using latest raw position data."""
         def angle_diff(a, b):
             """Calculate smallest difference between two angles in degrees."""
             d = a - b
             return ((d + 180) % 360) - 180
-        
-        averages = self.get_average_positions()
-        
-        for i, (name, pos_data) in enumerate(averages.items()):
-            x, y = pos_data['x'], pos_data['y']
-            orientation = pos_data['orientation']
-            
-            if name == "NAO":
-                x_nao = x
-                y_nao = y
-                orientation_nao = np.degrees(orientation)
-                nao_found = True
-                print("NAO found")
-                
-            if name == target:  # Use the parameter instead of hardcoded "Target"
-                x_target = x
-                y_target = y
-                target_found = True
-                print("Target Found")
-        
-        # Check if both objects were found before calculating
-        if not nao_found:
+
+        nao_found = False
+        target_found = False
+
+        if "NAO" in self.track_positions and self.track_positions["NAO"]:
+            last_nao = self.track_positions["NAO"][-1]
+            x_nao, y_nao, _, orientation_nao = last_nao
+            orientation_nao = np.degrees(orientation_nao)  # convert to degrees
+            nao_found = True
+            print("NAO found")
+        else:
             print("Error: NAO not found")
+
+        if target in self.track_positions and self.track_positions[target]:
+            last_target = self.track_positions[target][-1]
+            x_target, y_target, _, _ = last_target
+            target_found = True
+            print("Target found")
+        else:
+            print(f"Error: Target '{target}' not found")
+
+        if not (nao_found and target_found):
             return None
-            
-        if not target_found:
-            print(f"Error: {target} not found")
-            return None
-        
-        # Calculate angle only if both objects exist
+
+        # Calculate direction to target
         dx = x_target - x_nao
         dy = y_target - y_nao
-        angle_to_target = np.degrees(np.atan2(dy, dx))
-        
-        # Compute the relative angle (angle difference)
-        relative_angle = angle_diff(angle_to_target, orientation_nao)
-        print(f"Angle to target: {angle_to_target}")
-        print(f"Relative angle: {relative_angle}")
+        angle_to_target = np.degrees(np.arctan2(dy, dx))
 
-        self.send_to_nao(np.radians(relative_angle))
+        # Calculate relative angle
+        relative_angle = angle_diff(angle_to_target, orientation_nao)
+
+        print(f"Angle to target: {angle_to_target:.2f}")
+        print(f"NAO orientation: {orientation_nao:.2f}")
+        print(f"Relative angle: {relative_angle:.2f}")
+
+        self.send_to_nao(np.radians(relative_angle))  # send in radians
+
         
 
 

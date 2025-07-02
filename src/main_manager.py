@@ -29,7 +29,7 @@ if __name__ == "__main__":
     
     manager.connect()
 
-    target_str = "Target"
+    target_str = "ErenTurkmen"
     
     try:
         iteration = 0
@@ -39,7 +39,7 @@ if __name__ == "__main__":
                 mapper.update_visualization()
                 
                 # Update visualization every iteration
-                if iteration % 1 == 0:
+                if iteration % 10 == 0:
                     #mapper.print_summary()
                     mapper.handle_nao_angle(target=target_str)
                 
