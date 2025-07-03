@@ -10,7 +10,7 @@ try:
     import socket
     PORT = 9999
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect(("192.168.68.73", PORT))
+    sock.connect(("192.168.68.51", PORT))
 except Exception:
     print("Cant connect to NAO")
 

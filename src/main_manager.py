@@ -11,13 +11,13 @@ if __name__ == "__main__":
         'x_min': 0, 'x_max': 1000,
         'y_min': 0, 'y_max': 1000
     }
-    TIME_WINDOW_SECONDS = 2  # Only keep last x seconds of data
+    TIME_WINDOW_SECONDS = 3  # Only keep last x seconds of data
     
     # Create the mapper
     mapper = TrackMapper(MAP_IMAGE_PATH, COORDINATE_BOUNDS, TIME_WINDOW_SECONDS)
     
     # Create MQTT manager
-    manager = MQTTMultiSourceManager(broker_address="test.mosquitto.org")
+    manager = MQTTMultiSourceManager(broker_address="broker.hivemq.com")
     manager.add_source("all_tracking", "tracking/+/+/+", camera_handler)
     
     # Set enhanced callbacks that include the mapper
@@ -29,7 +29,7 @@ if __name__ == "__main__":
     
     manager.connect()
 
-    target_str = "ErenTurkmen"
+    target_str = "FurkanTuran"
     
     try:
         iteration = 0
@@ -40,7 +40,7 @@ if __name__ == "__main__":
                 
                 # Update visualization every iteration
                 if iteration % 10 == 0:
-                    #mapper.print_summary()
+                    mapper.print_summary()
                     mapper.handle_nao_angle(target=target_str)
                 
                 

@@ -37,12 +37,19 @@ def run_aruco_tracking(host: str, port: int = 8080, room_index: int = 0, cam_ind
     projector.select_room(room_index)
     projector.select_camera(cam_index)
 
-    publisher = MQTTPublisher(broker_address="test.mosquitto.org", room_index=room_index, camera_index=cam_index)
+    publisher = MQTTPublisher(broker_address="broker.hivemq.com", room_index=room_index, camera_index=cam_index)
     publisher.connect()
 
     # ArUco dictionary and detector setup
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
     detector_params = cv2.aruco.DetectorParameters()
+
+    # Create named window with resizable property
+    window_name = "Aruco Tracking"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    
+    # Optional: Set initial window size
+    cv2.resizeWindow(window_name, 1920, 1080)
 
     print("Aruco marker tracking started. Press 'q' to exit.")
     while tcp_client.is_connected():
@@ -139,7 +146,7 @@ def run_aruco_tracking(host: str, port: int = 8080, room_index: int = 0, cam_ind
                     print(f"Published: {det['name']} at ({cx}, {cy}) with orientation {np.degrees(det['orientation']):.1f}°")
 
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        cv2.imshow("Aruco Tracking", frame)
+        cv2.imshow(window_name, frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 

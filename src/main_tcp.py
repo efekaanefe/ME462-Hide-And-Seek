@@ -47,7 +47,7 @@ def run_tracking_with_tcp(host: str, port: int = 8080, output_path: str = None,
     projector = HomographyProjector()
     orientation = OrientationDetector()
     tracker = PersonTracker()
-    publisher = MQTTPublisher(broker_address="test.mosquitto.org", room_index=room_index, camera_index=cam_index)
+    publisher = MQTTPublisher(broker_address="broker.hivemq.com", room_index=room_index, camera_index=cam_index)
     publisher.connect()
     
     # Wait for MQTT connection
