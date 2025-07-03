@@ -37,7 +37,7 @@ def run_aruco_tracking(host: str, port: int = 8080, room_index: int = 0, cam_ind
     projector.select_room(room_index)
     projector.select_camera(cam_index)
 
-    publisher = MQTTPublisher(broker_address="mqtt.eclipseprojects.io", room_index=room_index, camera_index=cam_index)
+    publisher = MQTTPublisher(broker_address="test.mosquitto.org", room_index=room_index, camera_index=cam_index)
     publisher.connect()
 
     # ArUco dictionary and detector setup

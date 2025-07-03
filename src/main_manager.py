@@ -17,7 +17,7 @@ if __name__ == "__main__":
     mapper = TrackMapper(MAP_IMAGE_PATH, COORDINATE_BOUNDS, TIME_WINDOW_SECONDS)
     
     # Create MQTT manager
-    manager = MQTTMultiSourceManager(broker_address="mqtt.eclipseprojects.io")
+    manager = MQTTMultiSourceManager(broker_address="test.mosquitto.org")
     manager.add_source("all_tracking", "tracking/+/+/+", camera_handler)
     
     # Set enhanced callbacks that include the mapper
