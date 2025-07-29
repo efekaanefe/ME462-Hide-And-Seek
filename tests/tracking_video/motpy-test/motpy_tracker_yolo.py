@@ -110,7 +110,7 @@ def read_video_file(video_path: str):
 def run(video_path: str, detect_labels,
         video_downscale: float = 1.,
         yolo_model: str = 'yolov8n.pt',
-        confidence_threshold: float = 0.3,
+        confidence_threshold: float = 0.4,
         tracker_min_iou: float = 0.25,
         show_detections: bool = False,
         track_text_verbose: int = 0,
